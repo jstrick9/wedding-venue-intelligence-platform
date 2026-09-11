@@ -3,6 +3,7 @@ import { on } from '../../utils/appEvents';
 import {
   INVALID_VENUE_MAP_ROUTE_PRIORITY,
   projectVenueMap,
+  VENUE_MAP_MAX_IDENTIFIER_LENGTH,
   VENUE_MAP_MAX_POINTS,
   VENUE_MAP_MAX_SERIALIZED_BYTES,
 } from '../../utils/venueMapDesigner';
@@ -18,9 +19,19 @@ import {
   routePolyline,
   analyzeVenueMapConfig,
   assertVenueMapComplexityWithinBudget,
+  assertVenueMapArrivalRolesResolved,
+  assertVenueMapAudiencesResolved,
+  assertVenueMapBaseImageResolved,
+  assertVenueMapIdentifiersValid,
   assertVenueMapPointCoordinatesResolved,
+  assertVenueMapPointGpsResolved,
+  assertVenueMapPointKindFieldsCanonical,
+  assertVenueMapRouteAccessibilityResolved,
+  assertVenueMapRouteDeliveryCompatible,
   assertVenueMapRoutePrioritiesResolved,
+  assertVenueMapSpacePointLinksUnique,
   assertVenueMapStructuralRecoveryResolved,
+  assertVenueMapTextFieldsValid,
   cacheVenueMapConfigFromServer,
   emptyVenueMapConfig,
   getQuarantinedVenueMapForRecovery,
@@ -30,6 +41,7 @@ import {
   venueMapStructuralRecoveryBackupIssue,
   venueMapFrameIssue,
   venueMapHasInvalidPointCoordinates,
+  venueMapHasInvalidPointGps,
   normalizeVenueMapConfig,
   normalizeVenueMapConfigForPortal,
 } from './venueWayfindingService';
@@ -110,6 +122,347 @@ describe('venueWayfindingService', () => {
     expect(() => saveVenueMapConfig(malformedMap as any)).toThrow(/unsupported or malformed map shapes/i);
   });
 
+  it('preserves exact out-of-frame shape geometry for explicit recovery', () => {
+    const malformedMap = {
+      ...emptyVenueMapConfig(),
+      drawings: [
+        { id: 'outside-zone', type: 'zone', x: 90, y: 10, width: 20, height: 10 },
+        {
+          id: 'outside-line',
+          type: 'line',
+          x: 0,
+          y: 0,
+          points: [{ x: -4, y: 5 }, { x: 40, y: 20 }],
+        },
+      ],
+    };
+
+    cacheVenueMapConfigFromServer(malformedMap);
+    expect(getVenueMapConfig()?.drawings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'outside-zone', x: 90, width: 20 }),
+      expect.objectContaining({
+        id: 'outside-line',
+        points: [{ x: -4, y: 5 }, { x: 40, y: 20 }],
+      }),
+    ]));
+    expect(projectVenueMap(getVenueMapConfig()!, 'guest').drawings).toEqual([]);
+    expect(() => saveVenueMapConfig(malformedMap as any)).toThrow(/out-of-frame geometry/i);
+  });
+
+  it('preserves an out-of-range finite rotation exactly and withholds the whole shape', () => {
+    const overRotatedMap = {
+      ...emptyVenueMapConfig(),
+      drawings: [{
+        id: 'turned-zone',
+        type: 'rectangle',
+        text: 'Turned zone',
+        x: 40,
+        y: 30,
+        width: 20,
+        height: 10,
+        rotation: 450,
+      }],
+    };
+
+    cacheVenueMapConfigFromServer(overRotatedMap);
+    expect(getVenueMapConfig()?.drawings?.[0].rotation).toBe(450);
+    expect(normalizeVenueMapConfig(overRotatedMap)?.drawings).toEqual([]);
+    expect(normalizeVenueMapConfigForPortal(overRotatedMap)?.drawings).toEqual([]);
+    expect(getVenueMapConfigForPortal()?.drawings).toEqual([]);
+    expect(projectVenueMap(getVenueMapConfig()!, 'guest').drawings).toEqual([]);
+    expect(() => saveVenueMapConfig(overRotatedMap))
+      .toThrow(/geometry, rotation, or appearance/i);
+  });
+
+  it('preserves malformed shape appearance exactly and withholds the whole shape', () => {
+    const malformedAppearanceMap = {
+      ...emptyVenueMapConfig(),
+      drawings: [{
+        id: 'hidden-zone',
+        type: 'zone',
+        x: 10,
+        y: 10,
+        width: 20,
+        height: 10,
+        fillColor: 'url(https://tracker.example/pixel)',
+        strokeColor: null,
+        strokeWidth: 40,
+        opacity: -1,
+        fontSize: 'large',
+      }],
+    } as any;
+
+    cacheVenueMapConfigFromServer(malformedAppearanceMap);
+    expect(getVenueMapConfig()?.drawings?.[0]).toMatchObject({
+      fillColor: 'url(https://tracker.example/pixel)',
+      strokeColor: null,
+      strokeWidth: 40,
+      opacity: -1,
+      fontSize: 'large',
+    });
+    expect(normalizeVenueMapConfig(malformedAppearanceMap)?.drawings).toEqual([]);
+    expect(normalizeVenueMapConfigForPortal(malformedAppearanceMap)?.drawings).toEqual([]);
+    expect(getVenueMapConfigForPortal()?.drawings).toEqual([]);
+    expect(projectVenueMap(getVenueMapConfig()!, 'couple').drawings).toEqual([]);
+    expect(() => saveVenueMapConfig(malformedAppearanceMap))
+      .toThrow(/geometry, rotation, or appearance/i);
+  });
+
+  it('preserves duplicate-linked space pins for admin repair but withholds every occurrence from portals', () => {
+    const duplicateLinkedMap = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Gate', kind: 'entry', x: 1, y: 1 },
+        { id: 'garden-a', label: 'Garden A', kind: 'space', venueId: 'garden', x: 10, y: 10 },
+        { id: 'garden-b', label: 'Garden B', kind: 'space', venueId: 'garden', x: 20, y: 20 },
+      ],
+      routes: [
+        { id: 'a', name: 'A', pointIds: ['gate', 'garden-a'] },
+        { id: 'b', name: 'B', pointIds: ['gate', 'garden-b'] },
+      ],
+    } as any;
+
+    cacheVenueMapConfigFromServer(duplicateLinkedMap);
+    expect(getVenueMapConfig()?.points.map((point) => point.id)).toEqual([
+      'gate', 'garden-a', 'garden-b',
+    ]);
+    expect(getVenueMapConfigForPortal()?.points.map((point) => point.id)).toEqual(['gate']);
+    expect(normalizeVenueMapConfigForPortal(duplicateLinkedMap)?.points.map((point) => point.id))
+      .toEqual(['gate']);
+    expect(projectVenueMap(duplicateLinkedMap, 'couple').points.map((point) => point.id))
+      .toEqual(['gate']);
+    expect(() => assertVenueMapSpacePointLinksUnique(duplicateLinkedMap))
+      .toThrow(/only one canonical map pin/i);
+    expect(() => saveVenueMapConfig(duplicateLinkedMap))
+      .toThrow(/only one canonical map pin/i);
+  });
+
+  it('preserves malformed base-image configuration for admin repair and withholds it from portals', () => {
+    const malformedBaseMap = {
+      ...emptyVenueMapConfig(),
+      backgroundImageUrl: 'javascript:alert(1)',
+      backgroundOpacity: 99,
+    } as any;
+
+    cacheVenueMapConfigFromServer(malformedBaseMap);
+    expect(getVenueMapConfig()).toMatchObject({
+      backgroundImageUrl: 'javascript:alert(1)',
+      backgroundOpacity: 99,
+    });
+    expect(normalizeVenueMapConfig(malformedBaseMap)).toMatchObject({
+      backgroundImageUrl: undefined,
+      backgroundOpacity: undefined,
+    });
+    expect(normalizeVenueMapConfigForPortal(malformedBaseMap)).toMatchObject({
+      backgroundImageUrl: undefined,
+      backgroundOpacity: undefined,
+    });
+    expect(getVenueMapConfigForPortal()).toMatchObject({
+      backgroundImageUrl: undefined,
+      backgroundOpacity: undefined,
+      backgroundImageUnavailable: true,
+    });
+    expect(projectVenueMap(getVenueMapConfig()!, 'couple')).toMatchObject({
+      backgroundImageUrl: undefined,
+      backgroundOpacity: undefined,
+      backgroundImageUnavailable: true,
+    });
+    expect(() => assertVenueMapBaseImageResolved(malformedBaseMap))
+      .toThrow(/Invalid base-map source or opacity/i);
+    expect(() => saveVenueMapConfig(malformedBaseMap))
+      .toThrow(/Invalid base-map source or opacity/i);
+  });
+
+  it('preserves overlong authored guidance for admin repair and omits its object from portals', () => {
+    const overlongGuidance = 'Use the east ramp. '.repeat(70);
+    expect(overlongGuidance.length).toBeGreaterThan(1000);
+    const malformedMap = {
+      ...emptyVenueMapConfig(),
+      points: [
+        {
+          id: 'caution',
+          label: 'East ramp',
+          description: overlongGuidance,
+          kind: 'entry',
+          x: 10,
+          y: 10,
+        },
+        { id: 'ballroom', label: 'Ballroom', kind: 'space', x: 30, y: 30 },
+      ],
+      routes: [{
+        id: 'accessible-route',
+        name: 'Accessible route',
+        pointIds: ['caution', 'ballroom'],
+      }],
+    };
+
+    cacheVenueMapConfigFromServer(malformedMap);
+    expect(getVenueMapConfig()?.points[0].description).toBe(overlongGuidance);
+    expect(() => assertVenueMapTextFieldsValid(malformedMap)).toThrow(/1000/);
+    expect(() => saveVenueMapConfig(malformedMap as any)).toThrow(/text must be repaired/i);
+    expect(getVenueMapConfigForPortal()).toMatchObject({
+      points: [expect.objectContaining({ id: 'ballroom' })],
+      routes: [],
+    });
+    expect(normalizeVenueMapConfigForPortal(malformedMap)).toMatchObject({
+      points: [expect.objectContaining({ id: 'ballroom' })],
+      routes: [],
+    });
+  });
+
+  it('preserves malformed arrival roles for admin repair and quarantines affected portal paths', () => {
+    const malformedArrivalMap = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'exit', label: 'Emergency exit', kind: 'entry', x: 5, y: 5, arrivalRole: 'maybe' },
+        { id: 'garden', label: 'Garden', kind: 'amenity', x: 10, y: 10 },
+      ],
+      routes: [{
+        id: 'exit-route',
+        name: 'Exit route',
+        pointIds: ['exit', 'garden'],
+      }],
+    } as any;
+
+    cacheVenueMapConfigFromServer(malformedArrivalMap);
+    expect(getVenueMapConfig()?.points[0].arrivalRole).toBe('maybe');
+    expect(normalizeVenueMapConfig(malformedArrivalMap)?.points[0].arrivalRole).toBe('maybe');
+    expect(() => assertVenueMapArrivalRolesResolved(malformedArrivalMap))
+      .toThrow(/Invalid or misplaced Entry \/ Exit arrival roles/i);
+    expect(() => saveVenueMapConfig(malformedArrivalMap))
+      .toThrow(/Invalid or misplaced Entry \/ Exit arrival roles/i);
+    expect(getVenueMapConfigForPortal()).toMatchObject({
+      points: [expect.objectContaining({ id: 'garden' })],
+      routes: [],
+    });
+    expect(normalizeVenueMapConfigForPortal(malformedArrivalMap)).toMatchObject({
+      points: [expect.objectContaining({ id: 'garden' })],
+      routes: [],
+    });
+  });
+
+  it('preserves malformed walkway mobility status for admin repair and fails closed in portals', () => {
+    const malformedAccessibilityMap = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Gate', kind: 'entry', x: 5, y: 5 },
+        { id: 'garden', label: 'Garden', kind: 'amenity', x: 10, y: 10 },
+      ],
+      routes: [{
+        id: 'garden-ramp',
+        name: 'Garden ramp',
+        pointIds: ['gate', 'garden'],
+        accessibility: { status: 'step-free' },
+        priority: 'standard',
+      }],
+    } as any;
+
+    const analysis = analyzeVenueMapConfig(malformedAccessibilityMap, { preserveDuplicateIds: true });
+    expect(analysis.map?.routes[0].accessibility).toEqual({ status: 'step-free' });
+    expect(() => assertVenueMapRouteAccessibilityResolved(malformedAccessibilityMap))
+      .toThrow(/Invalid walkway mobility status/i);
+    expect(() => saveVenueMapConfig(malformedAccessibilityMap))
+      .toThrow(/Invalid walkway mobility status/i);
+
+    cacheVenueMapConfigFromServer(malformedAccessibilityMap);
+    expect(getVenueMapConfig()?.routes[0].accessibility).toEqual({ status: 'step-free' });
+    expect(normalizeVenueMapConfig(malformedAccessibilityMap)?.routes[0].accessibility).toBe('unknown');
+    expect(projectVenueMap(getVenueMapConfig()!, 'couple').routes[0].accessibility).toBe('unknown');
+  });
+
+  it('preserves explicit malformed audiences for admin repair and rejects unresolved saves', () => {
+    const malformedAudienceMap = {
+      ...emptyVenueMapConfig(),
+      points: [{ id: 'gate', label: 'Gate', kind: 'entry', x: 5, y: 5, audience: 'vip' }],
+      routes: [{
+        id: 'walkway',
+        name: 'Walkway',
+        pointIds: ['gate', 'gate'],
+        audience: null,
+        accessibility: 'unknown',
+        priority: 'standard',
+      }],
+      drawings: [{
+        id: 'zone',
+        type: 'zone',
+        x: 5,
+        y: 5,
+        width: 10,
+        height: 10,
+        audience: { tier: 'private' },
+      }],
+    } as any;
+
+    const analysis = analyzeVenueMapConfig(malformedAudienceMap, { preserveDuplicateIds: true });
+    expect(analysis.map?.points[0].audience).toBe('vip');
+    expect(analysis.map?.routes[0].audience).toBeNull();
+    expect(analysis.map?.drawings?.[0].audience).toEqual({ tier: 'private' });
+    expect(() => assertVenueMapAudiencesResolved(malformedAudienceMap))
+      .toThrow(/Invalid point, walkway, or shape visibility/i);
+    expect(() => saveVenueMapConfig(malformedAudienceMap))
+      .toThrow(/Invalid point, walkway, or shape visibility/i);
+
+    cacheVenueMapConfigFromServer(malformedAudienceMap);
+    expect(getVenueMapConfig()?.points[0].audience).toBe('vip');
+    expect(getVenueMapConfig()?.routes[0].audience).toBeNull();
+    expect(getVenueMapConfig()?.drawings?.[0].audience).toEqual({ tier: 'private' });
+
+    const normalized = normalizeVenueMapConfig(malformedAudienceMap);
+    expect(normalized!.points[0].audience).toBe('staff');
+    expect(normalized!.routes[0].audience).toBe('staff');
+    expect(normalized!.drawings?.[0].audience).toBe('staff');
+    expect(projectVenueMap(getVenueMapConfig()!, 'couple')).toMatchObject({
+      points: [],
+      routes: [],
+      drawings: [],
+    });
+  });
+
+  it('preserves invalid GPS pairs for admin repair and strips them only from portals', () => {
+    const malformedGpsMap = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'partial', label: 'Partial GPS', kind: 'entry', x: 5, y: 5, lat: 35.22 },
+        { id: 'range', label: 'Out of range', kind: 'parking', x: 10, y: 10, lat: 95, lng: -80.8 },
+        { id: 'malformed', label: 'Malformed GPS', kind: 'amenity', x: 15, y: 15, lat: 'north', lng: null },
+        { id: 'valid', label: 'Valid GPS', kind: 'entry', x: 20, y: 20, lat: 35.1, lng: -80.9 },
+      ],
+    } as any;
+
+    const analysis = analyzeVenueMapConfig(malformedGpsMap, { preserveDuplicateIds: true });
+    expect(analysis.map?.points).toEqual([
+      expect.objectContaining({ id: 'partial', lat: 35.22, lng: undefined }),
+      expect.objectContaining({ id: 'range', lat: 95, lng: -80.8 }),
+      expect.objectContaining({ id: 'malformed', lat: 'north', lng: null }),
+      expect.objectContaining({ id: 'valid', lat: 35.1, lng: -80.9 }),
+    ]);
+    expect(venueMapHasInvalidPointGps(malformedGpsMap)).toBe(true);
+    expect(() => assertVenueMapPointGpsResolved(malformedGpsMap))
+      .toThrow(/Invalid, partial, or out-of-range GPS/i);
+    expect(() => saveVenueMapConfig(malformedGpsMap))
+      .toThrow(/Invalid, partial, or out-of-range GPS/i);
+
+    cacheVenueMapConfigFromServer(malformedGpsMap);
+    expect(getVenueMapConfig()?.points).toEqual([
+      expect.objectContaining({ id: 'partial', lat: 35.22, lng: undefined }),
+      expect.objectContaining({ id: 'range', lat: 95, lng: -80.8 }),
+      expect.objectContaining({ id: 'malformed', lat: 'north', lng: null }),
+      expect.objectContaining({ id: 'valid', lat: 35.1, lng: -80.9 }),
+    ]);
+
+    for (const portalMap of [
+      normalizeVenueMapConfigForPortal(malformedGpsMap),
+      projectVenueMap(getVenueMapConfig()!, 'staff'),
+    ]) {
+      expect(portalMap?.points).toEqual([
+        expect.objectContaining({ id: 'partial', lat: undefined, lng: undefined }),
+        expect.objectContaining({ id: 'range', lat: undefined, lng: undefined }),
+        expect.objectContaining({ id: 'malformed', lat: undefined, lng: undefined }),
+        expect.objectContaining({ id: 'valid', lat: 35.1, lng: -80.9 }),
+      ]);
+    }
+  });
+
   it('retains structurally malformed occurrences in a separate admin-only recovery layer', () => {
     const malformed = {
       ...emptyVenueMapConfig(),
@@ -144,6 +497,108 @@ describe('venueWayfindingService', () => {
 
     saveVenueMapConfig({ ...cached!, rainContingencies: [] });
     expect(getVenueMapStructuralRecoveryArtifacts(getVenueMapConfig())).toEqual([]);
+  });
+
+  it('never truncates malformed identities and preserves their recovery candidates exactly', () => {
+    const overlongPointId = `point-${'p'.repeat(VENUE_MAP_MAX_IDENTIFIER_LENGTH)}`;
+    const overlongRouteId = `route-${'r'.repeat(VENUE_MAP_MAX_IDENTIFIER_LENGTH)}`;
+    const overlongDrawingId = `shape-${'s'.repeat(VENUE_MAP_MAX_IDENTIFIER_LENGTH)}`;
+    const overlongRainId = `rain-${'c'.repeat(VENUE_MAP_MAX_IDENTIFIER_LENGTH)}`;
+    const overlongLabel = 'Gate '.repeat(60);
+    const overlongGuidance = 'Keep left. '.repeat(120);
+    const malformed = {
+      ...emptyVenueMapConfig(),
+      points: [
+        {
+          id: overlongPointId,
+          label: overlongLabel,
+          description: overlongGuidance,
+          kind: 'entry',
+          x: 4,
+          y: 5,
+        },
+        { id: 'safe-a', label: 'Parking', kind: 'parking', x: 10, y: 10 },
+        { id: 'safe-b', label: 'Ballroom', kind: 'amenity', x: 20, y: 20 },
+      ],
+      routes: [
+        { id: overlongRouteId, name: 'Malformed ID route', pointIds: ['safe-a', 'safe-b'] },
+        { id: 'broken-reference', name: 'Broken reference', pointIds: ['safe-a', overlongPointId] },
+      ],
+      drawings: [{
+        id: overlongDrawingId,
+        type: 'circle',
+        x: 30,
+        y: 30,
+        radius: 5,
+      }],
+      rainContingencies: [{
+        id: overlongRainId,
+        outdoorVenueId: 'garden',
+        indoorVenueId: 'hall',
+      }],
+    };
+
+    const analysis = analyzeVenueMapConfig(malformed, { preserveDuplicateIds: true });
+    expect(analysis.map?.points.map((point) => point.id)).toEqual(['safe-a', 'safe-b']);
+    expect(analysis.map?.routes).toEqual([
+      expect.objectContaining({
+        id: 'broken-reference',
+        pointIds: ['safe-a', overlongPointId],
+      }),
+    ]);
+    expect(analysis.map?.drawings).toEqual([]);
+    expect(analysis.map?.rainContingencies).toEqual([]);
+    expect(analysis.structuralRecoveryArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        family: 'point',
+        candidate: expect.objectContaining({
+          id: overlongPointId,
+          label: overlongLabel,
+          description: overlongGuidance,
+        }),
+      }),
+      expect.objectContaining({
+        family: 'route',
+        candidate: expect.objectContaining({ id: overlongRouteId }),
+      }),
+      expect.objectContaining({
+        family: 'drawing',
+        candidate: expect.objectContaining({ id: overlongDrawingId }),
+      }),
+      expect.objectContaining({
+        family: 'rainContingency',
+        candidate: expect.objectContaining({ id: overlongRainId }),
+      }),
+    ]));
+
+    cacheVenueMapConfigFromServer(malformed);
+    const cached = getVenueMapConfig();
+    expect(cached?.routes[0].pointIds[1]).toBe(overlongPointId);
+    expect(getVenueMapStructuralRecoveryArtifacts(cached)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        family: 'point',
+        candidate: expect.objectContaining({
+          id: overlongPointId,
+          label: overlongLabel,
+          description: overlongGuidance,
+        }),
+      }),
+      expect.objectContaining({
+        family: 'route',
+        candidate: expect.objectContaining({ id: overlongRouteId }),
+      }),
+      expect.objectContaining({
+        family: 'drawing',
+        candidate: expect.objectContaining({ id: overlongDrawingId }),
+      }),
+      expect.objectContaining({
+        family: 'rainContingency',
+        candidate: expect.objectContaining({ id: overlongRainId }),
+      }),
+    ]));
+    expect(projectVenueMap(cached!, 'guest').routes).toEqual([]);
+    expect(() => assertVenueMapIdentifiersValid(malformed)).toThrow(/limit is 200/i);
+    expect(() => saveVenueMapConfig(malformed as any)).toThrow(/identifiers must be explicitly repaired/i);
   });
 
   it('defaults genuinely omitted legacy dimensions without quarantining the map', () => {
@@ -319,7 +774,7 @@ describe('venueWayfindingService', () => {
         family: 'point',
         occurrenceIndex: 0,
         issues: [expect.stringMatching(/outside the current map frame/i)],
-        candidate: expect.objectContaining({ id: 'outside', x: 0, y: 40 }),
+        candidate: expect.objectContaining({ id: 'outside', x: -12, y: 40 }),
       }),
     ]);
     expect(projectVenueMap(analysis.map!, 'couple').points.map((point) => point.id))
@@ -333,22 +788,35 @@ describe('venueWayfindingService', () => {
 
     cacheVenueMapConfigFromServer(malformedPointMap);
     expect(getVenueMapStructuralRecoveryArtifacts(getVenueMapConfig())).toEqual([
-      expect.objectContaining({ family: 'point', candidate: expect.objectContaining({ x: 0 }) }),
+      expect.objectContaining({ family: 'point', candidate: expect.objectContaining({ x: -12 }) }),
     ]);
   });
 
-  it('does not infer point-bound failures against a temporary quarantined frame', () => {
-    const analysis = analyzeVenueMapConfig({
+  it('preserves a point outside a temporary quarantined frame for explicit repair', () => {
+    const malformed = {
       ...emptyVenueMapConfig(),
       width: 900,
       points: [{ id: 'far', label: 'Far lawn', kind: 'space', x: 800, y: 40 }],
-    }, { preserveDuplicateIds: true });
+    };
+    const analysis = analyzeVenueMapConfig(malformed, { preserveDuplicateIds: true });
 
     expect(analysis.structuralRecoveryArtifacts).toEqual([
       expect.objectContaining({ family: 'map', mapFrameMalformed: true }),
+      expect.objectContaining({
+        family: 'point',
+        issues: [expect.stringMatching(/temporary recovery map frame/i)],
+        candidate: expect.objectContaining({ id: 'far', x: 800, y: 40 }),
+      }),
     ]);
-    expect(analysis.map?.points).toEqual([
-      expect.objectContaining({ id: 'far', x: 500, y: 40 }),
+    expect(analysis.map?.points).toEqual([]);
+
+    cacheVenueMapConfigFromServer(malformed);
+    expect(getVenueMapStructuralRecoveryArtifacts(getVenueMapConfig())).toEqual([
+      expect.objectContaining({ family: 'map', mapFrameMalformed: true }),
+      expect.objectContaining({
+        family: 'point',
+        candidate: expect.objectContaining({ id: 'far', x: 800, y: 40 }),
+      }),
     ]);
   });
 
@@ -484,7 +952,28 @@ describe('venueWayfindingService', () => {
       'ceremony',
     ]);
     expect(routePolyline(normalized, 'arrival')).toEqual([]);
-    expect(() => saveVenueMapConfig(normalized)).toThrow(/walkway point references/i);
+    expect(() => saveVenueMapConfig(normalized)).toThrow(/point ID|walkway point references/i);
+  });
+
+  it('rejects persistence when a walkway overclaims a referenced point audience or event scope', () => {
+    const incompatibleMap = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'parking', label: 'Parking', kind: 'parking' as const, x: 1, y: 1 },
+        { id: 'staff-turn', label: 'Service Turn', kind: 'path' as const, x: 10, y: 10, audience: 'staff' as const },
+      ],
+      routes: [{
+        id: 'arrival',
+        name: 'Guest arrival',
+        audience: 'public' as const,
+        pointIds: ['parking', 'staff-turn'],
+      }],
+    };
+
+    expect(() => assertVenueMapRouteDeliveryCompatible(incompatibleMap))
+      .toThrow(/audience or event scope/i);
+    expect(() => saveVenueMapConfig(incompatibleMap))
+      .toThrow(/audience or event scope/i);
   });
 
   it('emits one canonical persistence notification for a map save', async () => {
@@ -575,7 +1064,7 @@ describe('normalizeVenueMapConfig', () => {
     expect(normalizeVenueMapConfig('map')).toBeNull();
   });
 
-  it('rebuilds untrusted map JSON from an allowlist and clamps geometry', () => {
+  it('rebuilds untrusted map JSON from an allowlist and fails closed on invalid point geometry', () => {
     const normalized = normalizeVenueMapConfig({
       width: 900,
       height: -20,
@@ -639,17 +1128,17 @@ describe('normalizeVenueMapConfig', () => {
       backgroundOpacity: undefined,
       updatedAt: '2026-09-05T12:00:00.000Z',
     });
-    expect(normalized?.points).toHaveLength(2);
+    expect(normalized?.points).toHaveLength(1);
     expect(normalized?.points[0]).toEqual({
-      id: 'gate',
-      label: 'Main Gate',
+      id: 'garden',
+      label: 'Garden',
       description: undefined,
-      x: 0,
-      y: 20,
-      kind: 'entry',
+      x: 40,
+      y: 15,
+      kind: 'space',
       audience: 'public',
-      eventSpaceIds: ['ceremony'],
-      venueId: undefined,
+      eventSpaceIds: undefined,
+      venueId: 'ceremony',
       lat: undefined,
       lng: undefined,
     });
@@ -671,26 +1160,46 @@ describe('normalizeVenueMapConfig', () => {
     ]);
     expect(normalized?.routes[0]).not.toHaveProperty('internalNotes');
     expect(projectVenueMap(normalized!, 'couple').routes).toEqual([]);
-    expect(normalized?.drawings?.[0]).toMatchObject({
-      id: 'zone',
-      x: 0,
-      y: 19,
-      width: 500,
-      height: 1,
-      audience: 'staff',
-      fillColor: undefined,
-      strokeColor: '#0f766e',
-      points: [{ x: 0, y: 20 }],
-    });
-    expect((normalized?.drawings?.[0].x || 0) + (normalized?.drawings?.[0].width || 0))
-      .toBeLessThanOrEqual(normalized!.width);
-    expect((normalized?.drawings?.[0].y || 0) + (normalized?.drawings?.[0].height || 0))
-      .toBeLessThanOrEqual(normalized!.height);
-    expect(normalized?.drawings?.[0]).not.toHaveProperty('internalNotes');
+    // Unsafe SVG paint now withholds the whole shape instead of silently
+    // dropping the paint value and publishing a differently styled zone.
+    expect(normalized?.drawings).toEqual([]);
     expect(normalized?.rainContingencies).toEqual([
       { id: 'rain', outdoorVenueId: 'ceremony', indoorVenueId: 'hall', note: 'Use hall.' },
     ]);
     expect(normalized).not.toHaveProperty('internalVenueNotes');
+  });
+
+  it('canonicalizes kind-dependent point fields and uses one blank-label fallback', () => {
+    const noncanonical = {
+      ...emptyVenueMapConfig(),
+      points: [
+        {
+          id: 'former-space',
+          label: '   ',
+          kind: 'parking',
+          x: 5,
+          y: 5,
+          venueId: 'garden',
+        },
+        {
+          id: 'garden-space',
+          label: 'Garden',
+          kind: 'space',
+          x: 20,
+          y: 20,
+          venueId: 'garden',
+          eventSpaceIds: ['ballroom'],
+        },
+      ],
+    };
+
+    const normalized = normalizeVenueMapConfig(noncanonical)!;
+    expect(normalized.points[0]).toMatchObject({ label: 'Point', kind: 'parking' });
+    expect(normalized.points[0].venueId).toBeUndefined();
+    expect(normalized.points[1].eventSpaceIds).toBeUndefined();
+    expect(() => assertVenueMapPointKindFieldsCanonical(noncanonical))
+      .toThrow(/current point kind/i);
+    expect(() => assertVenueMapPointKindFieldsCanonical(normalized)).not.toThrow();
   });
 
   it('distinguishes omitted legacy route priority from an explicitly malformed priority', () => {

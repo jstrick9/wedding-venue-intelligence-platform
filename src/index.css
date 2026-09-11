@@ -414,7 +414,8 @@ a:not([class*="text-"]):not([class*="bg-"]) {
 /* Print styles */
 @media print {
   .no-print,
-  .spm-studio-chrome {
+  .spm-studio-chrome,
+  [data-map-export-exclude="true"] {
     display: none !important;
   }
   
@@ -1161,6 +1162,14 @@ input[type="checkbox"] {
   }
 }
 
+/* Venue Map visual artifacts are mounted only while an explicit export/print
+   request is being prepared. Keep both the projected artifact and the direct-
+   browser-print fallback off screen during ordinary editing. */
+.spm-venue-map-artifact-output,
+.spm-venue-map-print-fallback {
+  display: none;
+}
+
 /* Print styles - Cross-browser */
 @media print {
   * {
@@ -1170,13 +1179,47 @@ input[type="checkbox"] {
   }
   
   .no-print,
-  .spm-studio-chrome {
+  .spm-studio-chrome,
+  [data-map-export-exclude="true"] {
     display: none !important;
   }
   
   body {
     background: white !important;
     overflow: visible !important;
+  }
+
+  /* Venue Map printing is fail-closed. The app temporarily mounts one immutable,
+     audience-projected artifact only after its base image decodes. A browser-menu
+     or Ctrl/Cmd+P print attempted without that preparation shows instructions
+     instead of printing the editable recovery canvas. */
+  body:not(:has(.spm-print-view)):has(.spm-venue-map-artifact-output) #root *:not(.spm-venue-map-artifact-output):not(.spm-venue-map-artifact-output *):not(:has(.spm-venue-map-artifact-output)) {
+    display: none !important;
+  }
+
+  body:not(:has(.spm-print-view)):has(.spm-venue-map-artifact-output) .spm-venue-map-artifact-output {
+    display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  body:not(:has(.spm-print-view)):not(:has(.spm-venue-map-artifact-output)):has(.spm-venue-map-print-fallback) #root *:not(.spm-venue-map-print-fallback):not(.spm-venue-map-print-fallback *):not(:has(.spm-venue-map-print-fallback)) {
+    display: none !important;
+  }
+
+  body:not(:has(.spm-print-view)):not(:has(.spm-venue-map-artifact-output)) .spm-venue-map-print-fallback {
+    display: block !important;
+    margin: 2rem auto !important;
+    max-width: 44rem !important;
+    border: 2px solid #92400e !important;
+    border-radius: 0.75rem !important;
+    padding: 1.5rem !important;
+    color: #451a03 !important;
+  }
+
+  .spm-venue-map-print-fallback h1 {
+    margin: 0 0 0.75rem !important;
+    font-size: 1.5rem !important;
   }
 
   /* When the Print Preview modal is open, hide everything in #root except .spm-print-view */

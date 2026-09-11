@@ -1,26 +1,54 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { VenueMapConfig, VenueMapPoint, VenueMapPointKind } from '../types';
+import { DrawingObject, VenueMapConfig, VenueMapPoint, VenueMapPointKind } from '../types';
 import {
+  arrivalRoleLabel,
   pointColor,
   pointKindIcon,
   pointKindLabel,
+  partitionVenueMapBaseImageIntegrity,
   routePoints,
-  routePriorityLabel,
+  venueMapDrawingBounds,
+  venueMapPointTypeLabel,
 } from '../utils/venueMapDesigner';
 import { isStoragePathRef, resolveImageRef } from '../services/storage/imageStorage';
+import { VenueMapDrawingGuidance } from './VenueMapDrawingGuidance';
+import { VenueMapPointGuidance } from './VenueMapPointGuidance';
+import { VenueMapRouteGuidance } from './VenueMapRouteGuidance';
+
+export type VenueMapCanvasInteractionMode = 'select' | 'place' | 'walkway';
+export type VenueMapBackgroundLoadState = 'none' | 'loading' | 'ready' | 'error';
+export interface VenueMapBackgroundLoadSnapshot {
+  source?: string;
+  state: VenueMapBackgroundLoadState;
+}
 
 export interface VenueMapCanvasProps {
   map: VenueMapConfig;
-  /** When true, points can be dragged and the canvas click-places (designer mode). */
+  /** When true, existing points can be selected and repositioned. */
   editable?: boolean;
+  /**
+   * Explicit designer gesture mode. Editable canvases default to the safe
+   * selection mode; empty-canvas clicks never create data unless a creation
+   * mode is deliberately active.
+   */
+  interactionMode?: VenueMapCanvasInteractionMode;
   selectedPointId?: string | null;
   onSelectPoint?: (id: string | null) => void;
+  /** Fired after an existing point is clicked/tapped without being dragged. */
+  onActivatePoint?: (id: string) => void;
   onMovePoint?: (id: string, x: number, y: number) => void;
+  /** Selected property shape; shapes are interactive only in Select & Move. */
+  selectedDrawingId?: string | null;
+  onSelectDrawing?: (id: string | null) => void;
+  /** Translate a whole shape by an incremental map-coordinate delta. */
+  onMoveDrawing?: (id: string, deltaX: number, deltaY: number) => void;
   onPlacePoint?: (kind: VenueMapPointKind, x: number, y: number) => void;
-  /** Which point kind a click on empty canvas places (designer mode; default 'space'). */
+  /** Which point kind an intentional placement click creates. */
   placeKind?: VenueMapPointKind;
   /** Point ids to visually highlight (e.g. pins already added to an in-progress route). */
   highlightPointIds?: string[];
+  /** Transient editor-only point ids that must never appear in print or exports. */
+  transientPointIds?: string[];
   /** Fired on click/tap of an actionable point in read-only mode. */
   onPointClick?: (point: VenueMapPoint) => void;
   /** Limits which read-only points expose button semantics and invoke the action. */
@@ -29,14 +57,16 @@ export interface VenueMapCanvasProps {
   pointActionLabel?: (point: VenueMapPoint) => string;
   /** Show labels (default true). */
   showLabels?: boolean;
-  /** Render a color legend (by point kind) in the corner of the map — included in exports. */
+  /** Render an external color/symbol key for point kinds present. */
   showLegend?: boolean;
-  /** Forwarded so print/export can capture the rendered SVG. */
+  /** Forwarded so print/export can capture only the authored spatial SVG. */
   svgRef?: React.RefObject<SVGSVGElement | null>;
-  /** Optional title rendered inside the SVG (top center) so it appears in exports. */
+  /** Optional visible title rendered outside the spatial SVG. */
   title?: string;
   /** Hide spatial geometry while a configured base image is loading or unavailable. */
   hideMapWhenBackgroundUnavailable?: boolean;
+  /** Reports source-bound signed-resolution plus actual browser decode state. */
+  onBackgroundLoadStateChange?: (snapshot: VenueMapBackgroundLoadSnapshot) => void;
   /** Re-pull portal data when the server reports that the published image is unavailable. */
   onRetryBackgroundImage?: () => void;
 }
@@ -62,6 +92,32 @@ interface MapClientRect {
   top: number;
   width: number;
   height: number;
+}
+
+function venueMapPolylineMidpoint(
+  points: readonly Pick<VenueMapPoint, 'x' | 'y'>[],
+): { x: number; y: number } {
+  if (points.length === 0) return { x: 0, y: 0 };
+  if (points.length === 1) return { x: points[0].x, y: points[0].y };
+  const segments = points.slice(1).map((point, index) => {
+    const start = points[index];
+    return { start, end: point, length: Math.hypot(point.x - start.x, point.y - start.y) };
+  });
+  const totalLength = segments.reduce((sum, segment) => sum + segment.length, 0);
+  if (totalLength === 0) return { x: points[0].x, y: points[0].y };
+  let remaining = totalLength / 2;
+  for (const segment of segments) {
+    if (remaining <= segment.length) {
+      const ratio = segment.length === 0 ? 0 : remaining / segment.length;
+      return {
+        x: segment.start.x + (segment.end.x - segment.start.x) * ratio,
+        y: segment.start.y + (segment.end.y - segment.start.y) * ratio,
+      };
+    }
+    remaining -= segment.length;
+  }
+  const last = points[points.length - 1];
+  return { x: last.x, y: last.y };
 }
 
 /** Convert a viewport point through an xMidYMid/meet SVG viewport. */
@@ -98,12 +154,18 @@ export function clientPointToVenueMap(
 export function VenueMapCanvas({
   map,
   editable = false,
+  interactionMode = 'select',
   selectedPointId,
   onSelectPoint,
+  onActivatePoint,
   onMovePoint,
+  selectedDrawingId,
+  onSelectDrawing,
+  onMoveDrawing,
   onPlacePoint,
   placeKind = 'space',
   highlightPointIds,
+  transientPointIds,
   onPointClick,
   isPointInteractive,
   pointActionLabel,
@@ -112,35 +174,73 @@ export function VenueMapCanvas({
   svgRef,
   title,
   hideMapWhenBackgroundUnavailable = false,
+  onBackgroundLoadStateChange,
   onRetryBackgroundImage,
 }: VenueMapCanvasProps) {
   const panHintId = useId();
   const svgRefInternal = useRef<SVGSVGElement | null>(null);
   const ref = svgRef || svgRefInternal;
-  const [drag, setDrag] = useState<{
+  const dragRef = useRef<{
     id: string;
     pointerId: number;
     dx: number;
     dy: number;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+    captureTarget: SVGGElement;
   } | null>(null);
+  const drawingDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startMapX: number;
+    startMapY: number;
+    emittedDeltaX: number;
+    emittedDeltaY: number;
+    minDeltaX: number;
+    maxDeltaX: number;
+    minDeltaY: number;
+    maxDeltaY: number;
+    moved: boolean;
+    captureTarget: SVGGElement;
+  } | null>(null);
+  const completedPointGestureRef = useRef<{ id: string; moved: boolean } | null>(null);
+  const completedDrawingGestureRef = useRef<{ id: string; moved: boolean } | null>(null);
+  const suppressCanvasClickRef = useRef(false);
+  const suppressCanvasClickTimerRef = useRef<number | null>(null);
+  const [draggingPointId, setDraggingPointId] = useState<string | null>(null);
+  const [draggingDrawingId, setDraggingDrawingId] = useState<string | null>(null);
   const [focusedPointId, setFocusedPointId] = useState<string | null>(null);
+  const [focusedDrawingId, setFocusedDrawingId] = useState<string | null>(null);
+  // Treat source + opacity as one integrity boundary even when a caller bypasses
+  // the service projection helpers. An unsafe source must never reach SVG href.
+  const baseImageSafeMap = partitionVenueMapBaseImageIntegrity(map);
+  const backgroundSource = baseImageSafeMap.backgroundImageUrl;
+  const backgroundImageUnavailable = Boolean(baseImageSafeMap.backgroundImageUnavailable);
   const [backgroundRetry, setBackgroundRetry] = useState(0);
   const [backgroundResolution, setBackgroundResolution] = useState<{
     source?: string;
-    status: 'none' | 'loading' | 'ready' | 'error';
+    status: VenueMapBackgroundLoadState;
     url?: string;
   }>(() => {
-    const source = map.backgroundImageUrl;
-    if (map.backgroundImageUnavailable) return { source, status: 'error' };
+    const source = backgroundSource;
+    if (backgroundImageUnavailable) return { source, status: 'error' };
     if (!source) return { status: 'none' };
     if (!isStoragePathRef(source)) return { source, status: 'ready', url: source };
     return { source, status: 'loading' };
   });
+  const [decodedBackground, setDecodedBackground] = useState<{
+    source?: string;
+    url?: string;
+    status: 'none' | 'ready' | 'error';
+  }>({ status: 'none' });
 
   useEffect(() => {
     let cancelled = false;
-    const source = map.backgroundImageUrl;
-    if (map.backgroundImageUnavailable) {
+    const source = backgroundSource;
+    if (backgroundImageUnavailable) {
       setBackgroundResolution({ source, status: 'error' });
       return () => { cancelled = true; };
     }
@@ -179,10 +279,9 @@ export function VenueMapCanvas({
       cancelled = true;
       window.clearInterval(refreshTimer);
     };
-  }, [backgroundRetry, map.backgroundImageUnavailable, map.backgroundImageUrl]);
+  }, [backgroundImageUnavailable, backgroundRetry, backgroundSource]);
 
-  const backgroundSource = map.backgroundImageUrl;
-  const activeBackground = map.backgroundImageUnavailable
+  const activeResolution = backgroundImageUnavailable
     ? { source: backgroundSource, status: 'error' as const, url: undefined }
     : !backgroundSource
       ? { source: undefined, status: 'none' as const, url: undefined }
@@ -191,17 +290,34 @@ export function VenueMapCanvas({
         : isStoragePathRef(backgroundSource)
           ? { source: backgroundSource, status: 'loading' as const, url: undefined }
           : { source: backgroundSource, status: 'ready' as const, url: backgroundSource };
-  const resolvedBackgroundUrl = activeBackground.status === 'ready'
-    ? activeBackground.url
+  const resolvedBackgroundUrl = activeResolution.status === 'ready'
+    ? activeResolution.url
     : undefined;
-  const backgroundExpected = Boolean(backgroundSource || map.backgroundImageUnavailable);
-  const backgroundUnavailable = backgroundExpected
-    && activeBackground.status === 'error';
+  const backgroundExpected = Boolean(backgroundSource || backgroundImageUnavailable);
+  const backgroundLoadState: VenueMapBackgroundLoadState = !backgroundExpected
+    ? 'none'
+    : activeResolution.status === 'error'
+      ? 'error'
+      : activeResolution.status !== 'ready' || !resolvedBackgroundUrl
+        ? 'loading'
+        : decodedBackground.source === backgroundSource
+          && decodedBackground.url === resolvedBackgroundUrl
+          ? decodedBackground.status === 'ready' ? 'ready' : 'error'
+          : 'loading';
+  const backgroundUnavailable = backgroundLoadState === 'error';
   const hideSpatialMap = hideMapWhenBackgroundUnavailable
     && backgroundExpected
-    && activeBackground.status !== 'ready';
+    && backgroundLoadState !== 'ready';
+  useEffect(() => {
+    onBackgroundLoadStateChange?.({
+      source: backgroundSource,
+      state: backgroundLoadState,
+    });
+  }, [backgroundLoadState, backgroundSource, onBackgroundLoadStateChange]);
+
   const retryBackground = () => {
     if (backgroundSource) {
+      setDecodedBackground({ source: backgroundSource, status: 'none' });
       setBackgroundResolution({ source: backgroundSource, status: 'loading' });
       setBackgroundRetry((attempt) => attempt + 1);
     }
@@ -231,50 +347,238 @@ export function VenueMapCanvas({
   const pointActionDescription = (point: VenueMapPoint) =>
     pointActionLabel?.(point) || (hasValidGps(point) ? 'Open in maps.' : 'Open this location.');
 
+  const clearCanvasClickSuppression = () => {
+    suppressCanvasClickRef.current = false;
+    if (suppressCanvasClickTimerRef.current !== null) {
+      window.clearTimeout(suppressCanvasClickTimerRef.current);
+      suppressCanvasClickTimerRef.current = null;
+    }
+  };
+
+  const suppressGestureCanvasClick = () => {
+    suppressCanvasClickRef.current = true;
+    if (suppressCanvasClickTimerRef.current !== null) {
+      window.clearTimeout(suppressCanvasClickTimerRef.current);
+    }
+    // A compatibility click is dispatched immediately after pointerup. Keep the
+    // guard through that click, then clear it before the next user gesture.
+    suppressCanvasClickTimerRef.current = window.setTimeout(() => {
+      suppressCanvasClickRef.current = false;
+      suppressCanvasClickTimerRef.current = null;
+    }, 0);
+  };
+
+  useEffect(() => () => {
+    if (suppressCanvasClickTimerRef.current !== null) {
+      window.clearTimeout(suppressCanvasClickTimerRef.current);
+    }
+  }, []);
+
   const handleSvgClick = (event: React.MouseEvent<SVGSVGElement>) => {
-    if (!editable || !onPlacePoint) return;
+    if (!editable) return;
+    if (suppressCanvasClickRef.current) {
+      clearCanvasClickSuppression();
+      return;
+    }
     const target = event.target as Element;
-    if (target.closest('[data-map-point], [data-map-ui]')) return;
+    if (target.closest('[data-map-point], [data-map-drawing], [data-map-ui]')) return;
     const position = toMap(event);
-    if (position.inside) onPlacePoint(placeKind, position.x, position.y);
+    if (!position.inside) return;
+    if (interactionMode === 'select') {
+      onSelectPoint?.(null);
+      onSelectDrawing?.(null);
+      return;
+    }
+    if (!onPlacePoint) return;
+    onPlacePoint(interactionMode === 'walkway' ? 'path' : placeKind, position.x, position.y);
+  };
+
+  const drawingTypeLabel = (drawing: DrawingObject) => {
+    if (drawing.type === 'zone') return 'Property zone';
+    if (drawing.type === 'rectangle') return 'Rectangle';
+    if (drawing.type === 'circle') return 'Circle';
+    return 'Line';
+  };
+  const drawingAccessibleName = (drawing: DrawingObject) =>
+    `${drawingTypeLabel(drawing)}: ${drawing.text?.trim() || 'Unlabeled shape'}. Use arrow keys to move.`;
+  const drawingsInteractive = editable
+    && interactionMode === 'select'
+    && Boolean(onSelectDrawing);
+  const handleDrawingDown = (
+    event: React.PointerEvent<SVGGElement>,
+    drawing: DrawingObject,
+  ) => {
+    if (!drawingsInteractive || !onMoveDrawing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearCanvasClickSuppression();
+    suppressCanvasClickRef.current = true;
+    const position = toMap(event);
+    const bounds = venueMapDrawingBounds(drawing);
+    const captureTarget = event.currentTarget;
+    captureTarget.setPointerCapture?.(event.pointerId);
+    drawingDragRef.current = {
+      id: drawing.id,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startMapX: position.x,
+      startMapY: position.y,
+      emittedDeltaX: 0,
+      emittedDeltaY: 0,
+      minDeltaX: -bounds.minX,
+      maxDeltaX: W - bounds.maxX,
+      minDeltaY: -bounds.minY,
+      maxDeltaY: H - bounds.maxY,
+      moved: false,
+      captureTarget,
+    };
+    completedDrawingGestureRef.current = null;
+    setDraggingDrawingId(drawing.id);
+    onSelectDrawing?.(drawing.id);
+  };
+
+  const handleDrawingClick = (
+    event: React.MouseEvent<SVGGElement>,
+    drawing: DrawingObject,
+  ) => {
+    if (!drawingsInteractive) return;
+    event.stopPropagation();
+    const completed = completedDrawingGestureRef.current;
+    completedDrawingGestureRef.current = null;
+    clearCanvasClickSuppression();
+    if (!completed || completed.id !== drawing.id) onSelectDrawing?.(drawing.id);
+  };
+
+  const handleDrawingKey = (
+    event: React.KeyboardEvent<SVGGElement>,
+    drawing: DrawingObject,
+  ) => {
+    if (!drawingsInteractive) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onSelectDrawing?.(drawing.id);
+      return;
+    }
+    if (!onMoveDrawing || !event.key.startsWith('Arrow')) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 5 : 1;
+    const deltaX = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+    const deltaY = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+    onSelectDrawing?.(drawing.id);
+    onMoveDrawing(drawing.id, deltaX, deltaY);
   };
 
   const handlePointDown = (event: React.PointerEvent<SVGGElement>, point: VenueMapPoint) => {
     if (!editable || !onMovePoint) return;
     event.preventDefault();
     event.stopPropagation();
+    clearCanvasClickSuppression();
+    suppressCanvasClickRef.current = true;
     const position = toMap(event);
-    ref.current?.setPointerCapture?.(event.pointerId);
-    setDrag({
+    const captureTarget = event.currentTarget;
+    captureTarget.setPointerCapture?.(event.pointerId);
+    dragRef.current = {
       id: point.id,
       pointerId: event.pointerId,
       dx: point.x - position.x,
       dy: point.y - position.y,
-    });
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      moved: false,
+      captureTarget,
+    };
+    completedPointGestureRef.current = null;
+    setDraggingPointId(point.id);
     onSelectPoint?.(point.id);
   };
 
   const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
-    if (!drag || drag.pointerId !== event.pointerId || !onMovePoint) return;
+    const pointDrag = dragRef.current;
+    if (pointDrag && pointDrag.pointerId === event.pointerId && onMovePoint) {
+      const distance = Math.hypot(
+        event.clientX - pointDrag.startClientX,
+        event.clientY - pointDrag.startClientY,
+      );
+      // Ignore ordinary click/tap jitter. This avoids dirtying the map and adding
+      // an undo entry when an admin only intended to select a point.
+      if (!pointDrag.moved && distance < 4) return;
+      event.preventDefault();
+      pointDrag.moved = true;
+      const position = toMap(event);
+      onMovePoint(pointDrag.id, position.x + pointDrag.dx, position.y + pointDrag.dy);
+      return;
+    }
+
+    const drawingDrag = drawingDragRef.current;
+    if (!drawingDrag || drawingDrag.pointerId !== event.pointerId || !onMoveDrawing) return;
+    const distance = Math.hypot(
+      event.clientX - drawingDrag.startClientX,
+      event.clientY - drawingDrag.startClientY,
+    );
+    if (!drawingDrag.moved && distance < 4) return;
     event.preventDefault();
+    drawingDrag.moved = true;
     const position = toMap(event);
-    onMovePoint(drag.id, position.x + drag.dx, position.y + drag.dy);
+    const totalDeltaX = Math.max(
+      drawingDrag.minDeltaX,
+      Math.min(position.x - drawingDrag.startMapX, drawingDrag.maxDeltaX),
+    );
+    const totalDeltaY = Math.max(
+      drawingDrag.minDeltaY,
+      Math.min(position.y - drawingDrag.startMapY, drawingDrag.maxDeltaY),
+    );
+    const deltaX = totalDeltaX - drawingDrag.emittedDeltaX;
+    const deltaY = totalDeltaY - drawingDrag.emittedDeltaY;
+    drawingDrag.emittedDeltaX = totalDeltaX;
+    drawingDrag.emittedDeltaY = totalDeltaY;
+    if (deltaX !== 0 || deltaY !== 0) onMoveDrawing(drawingDrag.id, deltaX, deltaY);
   };
 
-  const endDrag = (event: React.PointerEvent<SVGSVGElement>) => {
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    if (ref.current?.hasPointerCapture?.(event.pointerId)) {
-      ref.current.releasePointerCapture?.(event.pointerId);
+  const endDrag = (event: React.PointerEvent<SVGSVGElement>, cancelled = false) => {
+    const pointDrag = dragRef.current;
+    if (pointDrag && pointDrag.pointerId === event.pointerId) {
+      if (pointDrag.captureTarget.hasPointerCapture?.(event.pointerId)) {
+        pointDrag.captureTarget.releasePointerCapture?.(event.pointerId);
+      }
+      dragRef.current = null;
+      setDraggingPointId(null);
+      if (cancelled) {
+        completedPointGestureRef.current = null;
+        clearCanvasClickSuppression();
+        return;
+      }
+      completedPointGestureRef.current = { id: pointDrag.id, moved: pointDrag.moved };
+      suppressGestureCanvasClick();
+      return;
     }
-    setDrag(null);
+
+    const drawingDrag = drawingDragRef.current;
+    if (!drawingDrag || drawingDrag.pointerId !== event.pointerId) return;
+    if (drawingDrag.captureTarget.hasPointerCapture?.(event.pointerId)) {
+      drawingDrag.captureTarget.releasePointerCapture?.(event.pointerId);
+    }
+    drawingDragRef.current = null;
+    setDraggingDrawingId(null);
+    if (cancelled) {
+      completedDrawingGestureRef.current = null;
+      clearCanvasClickSuppression();
+      return;
+    }
+    completedDrawingGestureRef.current = { id: drawingDrag.id, moved: drawingDrag.moved };
+    suppressGestureCanvasClick();
   };
 
   const handlePointKey = (event: React.KeyboardEvent<SVGGElement>, point: VenueMapPoint) => {
     if (event.key === 'Enter' || event.key === ' ') {
       if (!editable && !canActivatePoint(point)) return;
       event.preventDefault();
-      if (editable) onSelectPoint?.(point.id);
-      else onPointClick?.(point);
+      if (editable) {
+        onSelectPoint?.(point.id);
+        onActivatePoint?.(point.id);
+      } else {
+        onPointClick?.(point);
+      }
       return;
     }
     if (!editable || !onMovePoint || !event.key.startsWith('Arrow')) return;
@@ -286,12 +590,19 @@ export function VenueMapCanvas({
     onMovePoint(point.id, point.x + dx, point.y + dy);
   };
 
+  const highlightedRoutePoints = (highlightPointIds || []).flatMap((id) => {
+    const point = map.points.find((candidate) => candidate.id === id);
+    return point ? [point] : [];
+  });
   const legendKinds = ALL_KINDS.filter((kind) => map.points.some((point) => point.kind === kind));
-  const legendH = (legendKinds.length * 6 + 6) * unit;
-  const longest = legendKinds.reduce((max, kind) => Math.max(max, pointKindLabel(kind).length), 0);
-  const legendW = Math.max(18, longest * 2 + 11) * unit;
-  const mapName = title?.trim() || 'Venue map';
+  const visibleTitle = title?.trim();
+  const mapName = visibleTitle || 'Venue map';
   const interactive = editable || map.points.some(canActivatePoint);
+  const editorModeDescription = interactionMode === 'place'
+    ? `Point placement mode. Click an empty map location to place ${pointKindLabel(placeKind)}.`
+    : interactionMode === 'walkway'
+      ? 'Walkway builder mode. Click existing locations or empty map positions in travel order.'
+      : 'Select and move mode. Click a point or property shape to edit it, or drag it to a new position.';
   const actionablePoints = editable ? [] : map.points.filter(canActivatePoint);
   const nonActionableFallbackPoints = hideSpatialMap
     ? map.points.filter((point) => point.kind !== 'path' && !canActivatePoint(point))
@@ -315,7 +626,37 @@ export function VenueMapCanvas({
 
   return (
     <div>
-      {backgroundExpected && activeBackground.status === 'loading' && hideMapWhenBackgroundUnavailable && (
+      {visibleTitle && (
+        <header
+          data-map-external-title="true"
+          className="mb-2 rounded-lg border border-gray-200 bg-white px-3 py-2"
+        >
+          <h3 className="break-words text-sm font-semibold text-gray-800">{visibleTitle}</h3>
+        </header>
+      )}
+      {resolvedBackgroundUrl && backgroundLoadState !== 'ready' && (
+        <img
+          data-map-background-preloader="true"
+          src={resolvedBackgroundUrl}
+          alt=""
+          aria-hidden="true"
+          className="hidden no-print"
+          onLoad={() => setDecodedBackground({
+            source: backgroundSource,
+            url: resolvedBackgroundUrl,
+            status: 'ready',
+          })}
+          onError={() => {
+            setDecodedBackground({
+              source: backgroundSource,
+              url: resolvedBackgroundUrl,
+              status: 'error',
+            });
+            setBackgroundResolution({ source: backgroundSource, status: 'error' });
+          }}
+        />
+      )}
+      {backgroundExpected && backgroundLoadState === 'loading' && hideMapWhenBackgroundUnavailable && (
         <div className="mb-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-3 text-sm text-sky-900" role="status">
           Loading the published property base map before showing spatial guidance…
         </div>
@@ -332,7 +673,7 @@ export function VenueMapCanvas({
             <button
               type="button"
               onClick={retryBackground}
-              className="mt-2 min-h-11 rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-semibold text-amber-950 hover:bg-amber-100"
+              className="no-print spm-studio-chrome mt-2 min-h-11 rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-semibold text-amber-950 hover:bg-amber-100"
             >
               Retry base map
             </button>
@@ -363,14 +704,16 @@ export function VenueMapCanvas({
         preserveAspectRatio="xMidYMid meet"
         className="block h-auto w-full rounded-lg border border-teal-100 bg-teal-50"
         role="group"
-        aria-label={`${mapName}. ${map.points.length} mapped point${map.points.length === 1 ? '' : 's'} and ${(map.routes || []).length} walkway${(map.routes || []).length === 1 ? '' : 's'}.`}
+        aria-label={`${mapName}. ${map.points.length} mapped point${map.points.length === 1 ? '' : 's'}, ${(map.routes || []).length} walkway${(map.routes || []).length === 1 ? '' : 's'}, and ${(map.drawings || []).length} property shape${(map.drawings || []).length === 1 ? '' : 's'}.${editable ? ` ${editorModeDescription}` : ''}`}
         onClick={handleSvgClick}
         onPointerMove={handlePointerMove}
         onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        onPointerCancel={(event) => endDrag(event, true)}
         style={{
           aspectRatio: `${W} / ${H}`,
-          cursor: editable ? 'crosshair' : undefined,
+          cursor: editable
+            ? interactionMode === 'select' ? 'default' : 'crosshair'
+            : undefined,
           touchAction: editable
             ? extremeAspectRatio ? 'pan-x pan-y' : 'pan-y'
             : 'auto',
@@ -381,13 +724,16 @@ export function VenueMapCanvas({
       >
         <title>{mapName}</title>
         <desc>
-          {interactive
-            ? 'Interactive property map. Tab to individual points for details and actions.'
-            : 'Property map showing venue locations and authored walkways.'}
+          {editable
+            ? `Interactive property map. ${editorModeDescription} Tab to individual points and property shapes for keyboard editing.`
+            : interactive
+              ? 'Interactive property map. Tab to individual points for details and actions.'
+              : 'Property map showing venue locations and authored walkways.'}
         </desc>
 
-        {/* Background and annotation layers are pointer-transparent so admins can
-            place pins anywhere over a base map, route, or zone. */}
+        {/* The background and route overlays are always pointer-transparent.
+            Shapes become controls only in Select & Move, remaining transparent
+            during point placement and walkway authoring. */}
         {resolvedBackgroundUrl && (
           <image
             href={resolvedBackgroundUrl}
@@ -396,26 +742,60 @@ export function VenueMapCanvas({
             width={W}
             height={H}
             preserveAspectRatio="none"
-            opacity={map.backgroundOpacity ?? 0.85}
+            opacity={baseImageSafeMap.backgroundOpacity ?? 0.85}
             pointerEvents="none"
-            onError={() => setBackgroundResolution({
+            onLoad={() => setDecodedBackground({
               source: backgroundSource,
-              status: 'error',
+              url: resolvedBackgroundUrl,
+              status: 'ready',
             })}
+            onError={() => {
+              setDecodedBackground({
+                source: backgroundSource,
+                url: resolvedBackgroundUrl,
+                status: 'error',
+              });
+              setBackgroundResolution({
+                source: backgroundSource,
+                status: 'error',
+              });
+            }}
           />
         )}
 
-        <g pointerEvents="none" aria-hidden="true">
+        <g pointerEvents={drawingsInteractive ? 'auto' : 'none'} aria-hidden={drawingsInteractive ? undefined : true}>
           {(map.drawings || []).map((draw) => {
+            const selected = selectedDrawingId === draw.id;
+            const focused = focusedDrawingId === draw.id;
             if (draw.type === 'rectangle' || draw.type === 'zone') {
               const width = draw.width ?? 20 * unit;
               const height = draw.height ?? 15 * unit;
               return (
                 <g
                   key={draw.id}
+                  data-map-drawing={draw.id}
+                  tabIndex={drawingsInteractive ? 0 : undefined}
+                  role={drawingsInteractive ? 'button' : undefined}
+                  aria-label={drawingsInteractive ? drawingAccessibleName(draw) : undefined}
+                  aria-pressed={drawingsInteractive ? selected : undefined}
+                  onPointerDown={(event) => handleDrawingDown(event, draw)}
+                  onClick={(event) => handleDrawingClick(event, draw)}
+                  onKeyDown={(event) => handleDrawingKey(event, draw)}
+                  onFocus={() => {
+                    if (!drawingsInteractive) return;
+                    setFocusedDrawingId(draw.id);
+                    onSelectDrawing?.(draw.id);
+                  }}
+                  onBlur={() => setFocusedDrawingId((current) => current === draw.id ? null : current)}
                   transform={draw.rotation
                     ? `rotate(${draw.rotation} ${draw.x + width / 2} ${draw.y + height / 2})`
                     : undefined}
+                  style={{
+                    cursor: drawingsInteractive
+                      ? draggingDrawingId === draw.id ? 'grabbing' : 'grab'
+                      : 'default',
+                    touchAction: drawingsInteractive ? 'none' : 'auto',
+                  }}
                 >
                   <rect
                     x={draw.x}
@@ -435,23 +815,57 @@ export function VenueMapCanvas({
                       y={draw.y + height / 2}
                       textAnchor="middle"
                       dominantBaseline="middle"
-                      fontSize={3.5 * unit}
+                      fontSize={draw.fontSize ?? 3.5 * unit}
                       fontWeight="bold"
                       fill={draw.strokeColor || '#0d9488'}
                     >
                       {draw.text}
                     </text>
                   )}
+                  {(selected || focused) && (
+                    <g
+                      data-map-drawing-focus-ring={focused ? draw.id : undefined}
+                      data-map-export-exclude="true"
+                      pointerEvents="none"
+                      aria-hidden="true"
+                    >
+                      <rect x={draw.x} y={draw.y} width={width} height={height} rx={2 * unit} fill="none" stroke="#ffffff" strokeWidth={3 * unit} />
+                      <rect x={draw.x} y={draw.y} width={width} height={height} rx={2 * unit} fill="none" stroke={selected ? '#4A1942' : '#111827'} strokeWidth={1.4 * unit} strokeDasharray={`${2 * unit},${1.2 * unit}`} />
+                    </g>
+                  )}
                 </g>
               );
             }
             if (draw.type === 'circle') {
+              const radius = draw.radius ?? 10 * unit;
               return (
-                <g key={draw.id}>
+                <g
+                  key={draw.id}
+                  data-map-drawing={draw.id}
+                  tabIndex={drawingsInteractive ? 0 : undefined}
+                  role={drawingsInteractive ? 'button' : undefined}
+                  aria-label={drawingsInteractive ? drawingAccessibleName(draw) : undefined}
+                  aria-pressed={drawingsInteractive ? selected : undefined}
+                  onPointerDown={(event) => handleDrawingDown(event, draw)}
+                  onClick={(event) => handleDrawingClick(event, draw)}
+                  onKeyDown={(event) => handleDrawingKey(event, draw)}
+                  onFocus={() => {
+                    if (!drawingsInteractive) return;
+                    setFocusedDrawingId(draw.id);
+                    onSelectDrawing?.(draw.id);
+                  }}
+                  onBlur={() => setFocusedDrawingId((current) => current === draw.id ? null : current)}
+                  style={{
+                    cursor: drawingsInteractive
+                      ? draggingDrawingId === draw.id ? 'grabbing' : 'grab'
+                      : 'default',
+                    touchAction: drawingsInteractive ? 'none' : 'auto',
+                  }}
+                >
                   <circle
                     cx={draw.x}
                     cy={draw.y}
-                    r={draw.radius ?? 10 * unit}
+                    r={radius}
                     fill={draw.fillColor || '#0d9488'}
                     fillOpacity={draw.opacity ?? 0.25}
                     stroke={draw.strokeColor || '#0d9488'}
@@ -464,33 +878,76 @@ export function VenueMapCanvas({
                       y={draw.y}
                       textAnchor="middle"
                       dominantBaseline="middle"
-                      fontSize={3.5 * unit}
+                      fontSize={draw.fontSize ?? 3.5 * unit}
                       fontWeight="bold"
                       fill={draw.strokeColor || '#0d9488'}
                     >
                       {draw.text}
                     </text>
                   )}
+                  {(selected || focused) && (
+                    <g
+                      data-map-drawing-focus-ring={focused ? draw.id : undefined}
+                      data-map-export-exclude="true"
+                      pointerEvents="none"
+                      aria-hidden="true"
+                    >
+                      <circle cx={draw.x} cy={draw.y} r={radius} fill="none" stroke="#ffffff" strokeWidth={3 * unit} />
+                      <circle cx={draw.x} cy={draw.y} r={radius} fill="none" stroke={selected ? '#4A1942' : '#111827'} strokeWidth={1.4 * unit} strokeDasharray={`${2 * unit},${1.2 * unit}`} />
+                    </g>
+                  )}
                 </g>
               );
             }
             if (draw.type === 'line' && draw.points && draw.points.length >= 2) {
               const labelPoint = draw.points[Math.floor(draw.points.length / 2)];
+              const linePoints = draw.points.map((point) => `${point.x},${point.y}`).join(' ');
               return (
-                <g key={draw.id}>
+                <g
+                  key={draw.id}
+                  data-map-drawing={draw.id}
+                  tabIndex={drawingsInteractive ? 0 : undefined}
+                  role={drawingsInteractive ? 'button' : undefined}
+                  aria-label={drawingsInteractive ? drawingAccessibleName(draw) : undefined}
+                  aria-pressed={drawingsInteractive ? selected : undefined}
+                  onPointerDown={(event) => handleDrawingDown(event, draw)}
+                  onClick={(event) => handleDrawingClick(event, draw)}
+                  onKeyDown={(event) => handleDrawingKey(event, draw)}
+                  onFocus={() => {
+                    if (!drawingsInteractive) return;
+                    setFocusedDrawingId(draw.id);
+                    onSelectDrawing?.(draw.id);
+                  }}
+                  onBlur={() => setFocusedDrawingId((current) => current === draw.id ? null : current)}
+                  style={{
+                    cursor: drawingsInteractive
+                      ? draggingDrawingId === draw.id ? 'grabbing' : 'grab'
+                      : 'default',
+                    touchAction: drawingsInteractive ? 'none' : 'auto',
+                  }}
+                >
                   <polyline
-                    points={draw.points.map((point) => `${point.x},${point.y}`).join(' ')}
+                    points={linePoints}
                     fill="none"
                     stroke={draw.strokeColor || '#0d9488'}
                     strokeWidth={draw.strokeWidth ?? 1.5 * unit}
                     opacity={draw.opacity ?? 1}
                   />
+                  {drawingsInteractive && (
+                    <polyline
+                      points={linePoints}
+                      fill="none"
+                      stroke="transparent"
+                      strokeWidth={8 * unit}
+                      pointerEvents="stroke"
+                    />
+                  )}
                   {draw.text && (
                     <text
                       x={labelPoint.x}
                       y={labelPoint.y - 1.5 * unit}
                       textAnchor="middle"
-                      fontSize={3.5 * unit}
+                      fontSize={draw.fontSize ?? 3.5 * unit}
                       fontWeight="bold"
                       fill={draw.strokeColor || '#0d9488'}
                       paintOrder="stroke"
@@ -500,12 +957,25 @@ export function VenueMapCanvas({
                       {draw.text}
                     </text>
                   )}
+                  {(selected || focused) && (
+                    <g
+                      data-map-drawing-focus-ring={focused ? draw.id : undefined}
+                      data-map-export-exclude="true"
+                      pointerEvents="none"
+                      aria-hidden="true"
+                    >
+                      <polyline points={linePoints} fill="none" stroke="#ffffff" strokeWidth={4 * unit} />
+                      <polyline points={linePoints} fill="none" stroke={selected ? '#4A1942' : '#111827'} strokeWidth={1.8 * unit} strokeDasharray={`${2 * unit},${1.2 * unit}`} />
+                    </g>
+                  )}
                 </g>
               );
             }
             return null;
           })}
+        </g>
 
+        <g pointerEvents="none" aria-hidden="true">
           {(map.routes || []).map((route) => {
             const points = routePoints(map, route);
             if (points.length < 2) return null;
@@ -515,7 +985,20 @@ export function VenueMapCanvas({
             const preferred = priority === 'preferred';
             const secondary = priority === 'secondary';
             const emergencyOnly = priority === 'emergency-only';
-            const labelPoint = points[Math.floor(points.length / 2)];
+            const labelPoint = venueMapPolylineMidpoint(points);
+            const routeLabel = `${
+              emergencyOnly
+                ? 'Emergency only · '
+                : preferred
+                  ? 'Preferred · '
+                  : secondary
+                    ? 'Secondary · '
+                    : ''
+            }${stepFree ? '♿ ' : notStepFree ? 'Not step-free · ' : ''}${route.name}`;
+            const placeRouteLabelToLeft = labelPoint.x > W / 2;
+            const routeLabelX = labelPoint.x + (placeRouteLabelToLeft ? -1.5 : 1.5) * unit;
+            const placeRouteLabelBelow = labelPoint.y - 1.5 * unit < 4 * unit;
+            const routeLabelY = labelPoint.y + (placeRouteLabelBelow ? 4 : -1.5) * unit;
             return (
               <g key={route.id}>
                 <polyline
@@ -530,23 +1013,37 @@ export function VenueMapCanvas({
                       : stepFree ? undefined : `${3 * unit},${2 * unit}`}
                   opacity={secondary ? 0.7 : 0.9}
                 />
-                {emergencyOnly && (
-                  <text
-                    x={labelPoint.x + 1.5 * unit}
-                    y={labelPoint.y - 1.5 * unit}
-                    fontSize={3 * unit}
-                    fontWeight="bold"
-                    fill="#991b1b"
-                    paintOrder="stroke"
-                    stroke="#ffffff"
-                    strokeWidth={0.8 * unit}
-                  >
-                    Emergency only: {route.name}
-                  </text>
-                )}
+                <text
+                  data-map-route-label={route.id}
+                  x={routeLabelX}
+                  y={routeLabelY}
+                  textAnchor={placeRouteLabelToLeft ? 'end' : 'start'}
+                  fontSize={3 * unit}
+                  fontWeight={preferred || emergencyOnly ? 'bold' : 600}
+                  fill={emergencyOnly ? '#991b1b' : stepFree ? '#065f46' : notStepFree ? '#92400e' : '#115e59'}
+                  paintOrder="stroke"
+                  stroke="#ffffff"
+                  strokeWidth={0.8 * unit}
+                  strokeLinejoin="round"
+                >
+                  {routeLabel}
+                </text>
               </g>
             );
           })}
+
+          {editable && highlightedRoutePoints.length >= 2 && (
+            <polyline
+              data-map-ui="walkway-draft"
+              data-map-export-exclude="true"
+              points={highlightedRoutePoints.map((point) => `${point.x},${point.y}`).join(' ')}
+              fill="none"
+              stroke="#4A1942"
+              strokeWidth={2 * unit}
+              strokeDasharray={`${3 * unit},${1.5 * unit}`}
+              opacity={0.85}
+            />
+          )}
         </g>
 
         {/* Points */}
@@ -554,24 +1051,40 @@ export function VenueMapCanvas({
           const radius = (KIND_RADIUS[point.kind] ?? 4) * unit;
           const selected = selectedPointId === point.id;
           const focused = focusedPointId === point.id;
-          const highlighted = highlightPointIds?.includes(point.id) ?? false;
+          const highlightedIndex = highlightPointIds?.indexOf(point.id) ?? -1;
+          const highlighted = highlightedIndex >= 0;
           const pointInteractive = editable || canActivatePoint(point);
           const accessibleAction = !editable && pointInteractive
             ? pointActionDescription(point)
             : '';
+          const placeLabelToLeft = point.x > W / 2;
+          const pointLabelX = point.x + (placeLabelToLeft ? -1 : 1) * (radius + 1.5 * unit);
+          const placeLabelBelow = point.y - radius - unit < 5 * unit;
+          const pointLabelY = placeLabelBelow
+            ? point.y + radius + 4.5 * unit
+            : point.y - radius - unit;
           return (
             <g
               key={point.id}
               data-map-point={point.id}
+              data-map-export-exclude={transientPointIds?.includes(point.id) ? 'true' : undefined}
               tabIndex={pointInteractive ? 0 : undefined}
               role={pointInteractive ? 'button' : undefined}
               aria-label={pointInteractive
-                ? `${pointKindLabel(point.kind)}: ${point.label}${accessibleAction ? `. ${accessibleAction}` : ''}`
+                ? `${venueMapPointTypeLabel(point)}: ${point.label}${accessibleAction ? `. ${accessibleAction}` : ''}`
                 : undefined}
               onPointerDown={(event) => handlePointDown(event, point)}
               onClick={(event) => {
                 event.stopPropagation();
-                if (!editable && canActivatePoint(point)) onPointClick?.(point);
+                if (editable) {
+                  const completed = completedPointGestureRef.current;
+                  completedPointGestureRef.current = null;
+                  clearCanvasClickSuppression();
+                  if (!completed) onSelectPoint?.(point.id);
+                  if (!completed?.moved) onActivatePoint?.(point.id);
+                } else if (canActivatePoint(point)) {
+                  onPointClick?.(point);
+                }
               }}
               onKeyDown={(event) => handlePointKey(event, point)}
               onFocus={() => {
@@ -580,13 +1093,34 @@ export function VenueMapCanvas({
               }}
               onBlur={() => setFocusedPointId((current) => current === point.id ? null : current)}
               style={{
-                cursor: editable ? 'grab' : pointInteractive ? 'pointer' : 'default',
+                cursor: editable
+                  ? draggingPointId === point.id ? 'grabbing' : 'grab'
+                  : pointInteractive ? 'pointer' : 'default',
                 touchAction: editable ? 'none' : 'auto',
               }}
             >
               <circle cx={point.x} cy={point.y} r={radius + 3 * unit} fill="transparent" />
+              {selected && (
+                <circle
+                  data-map-selected-point-ring={point.id}
+                  data-map-export-exclude="true"
+                  cx={point.x}
+                  cy={point.y}
+                  r={radius + 1.8 * unit}
+                  fill="none"
+                  stroke="#111827"
+                  strokeWidth={1.5 * unit}
+                  pointerEvents="none"
+                  aria-hidden="true"
+                />
+              )}
               {focused && (
-                <g data-map-focus-ring={point.id} pointerEvents="none" aria-hidden="true">
+                <g
+                  data-map-focus-ring={point.id}
+                  data-map-export-exclude="true"
+                  pointerEvents="none"
+                  aria-hidden="true"
+                >
                   <circle
                     cx={point.x}
                     cy={point.y}
@@ -605,17 +1139,37 @@ export function VenueMapCanvas({
                   />
                 </g>
               )}
-              {highlighted && point.kind !== 'path' && (
-                <circle
-                  cx={point.x}
-                  cy={point.y}
-                  r={radius + 3.5 * unit}
-                  fill="none"
-                  stroke="#4A1942"
-                  strokeWidth={1.1 * unit}
-                  strokeDasharray={`${2 * unit},${1.5 * unit}`}
-                  pointerEvents="none"
-                />
+              {highlighted && (
+                <g data-map-export-exclude="true" pointerEvents="none" aria-hidden="true">
+                  <circle
+                    cx={point.x}
+                    cy={point.y}
+                    r={radius + 3.5 * unit}
+                    fill="none"
+                    stroke="#4A1942"
+                    strokeWidth={1.1 * unit}
+                    strokeDasharray={`${2 * unit},${1.5 * unit}`}
+                  />
+                  <circle
+                    cx={point.x - radius - 2.5 * unit}
+                    cy={point.y - radius - 2.5 * unit}
+                    r={3.3 * unit}
+                    fill="#4A1942"
+                    stroke="#ffffff"
+                    strokeWidth={0.8 * unit}
+                  />
+                  <text
+                    x={point.x - radius - 2.5 * unit}
+                    y={point.y - radius - 2.3 * unit}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={3.5 * unit}
+                    fontWeight="bold"
+                    fill="#ffffff"
+                  >
+                    {highlightedIndex + 1}
+                  </text>
+                </g>
               )}
               {point.kind !== 'path' ? (
                 <circle
@@ -623,8 +1177,8 @@ export function VenueMapCanvas({
                   cy={point.y}
                   r={radius}
                   fill={pointColor(point.kind)}
-                  stroke={selected ? '#111827' : 'white'}
-                  strokeWidth={(selected ? 1.6 : 1) * unit}
+                  stroke="white"
+                  strokeWidth={1 * unit}
                   pointerEvents="none"
                 />
               ) : (
@@ -638,8 +1192,9 @@ export function VenueMapCanvas({
               )}
               {showLabels && point.kind !== 'path' && (
                 <text
-                  x={point.x + radius + 1.5 * unit}
-                  y={point.y - radius - unit}
+                  x={pointLabelX}
+                  y={pointLabelY}
+                  textAnchor={placeLabelToLeft ? 'end' : 'start'}
                   fontSize={4.5 * unit}
                   fill="#1f2937"
                   paintOrder="stroke"
@@ -648,59 +1203,42 @@ export function VenueMapCanvas({
                   strokeLinejoin="round"
                   pointerEvents="none"
                 >
-                  {pointKindIcon(point.kind)} {point.label}
+                  {pointKindIcon(point.kind)} {point.label}{point.kind === 'entry' ? ` · ${arrivalRoleLabel(point.arrivalRole)}` : ''}
                 </text>
               )}
             </g>
           );
         })}
 
-        {/* Visual title and legend render above the base image and annotations. */}
-        {title && (
-          <g data-map-ui="title" pointerEvents="none" aria-hidden="true">
-            <rect x={W * 0.2} y={1.2 * unit} width={W * 0.6} height={7 * unit} rx={2 * unit} fill="#ffffff" opacity={0.86} />
-            <text x={W / 2} y={6.2 * unit} textAnchor="middle" fontSize={5 * unit} fontWeight="bold" fill="#1f2937">
-              {title}
-            </text>
-          </g>
-        )}
-        {showLegend && legendKinds.length > 0 && (
-          <g data-map-ui="legend" pointerEvents="none" aria-hidden="true">
-            <rect
-              x={W - legendW - 2 * unit}
-              y={H - legendH - 2 * unit}
-              width={legendW}
-              height={legendH}
-              rx={2 * unit}
-              fill="#ffffff"
-              opacity={0.9}
-              stroke="#d1d5db"
-              strokeWidth={0.5 * unit}
-            />
-            {legendKinds.map((kind, index) => (
-              <g key={kind}>
-                <circle
-                  cx={W - legendW + 4 * unit}
-                  cy={H - legendH + (4 + index * 6) * unit}
-                  r={1.8 * unit}
-                  fill={pointColor(kind)}
-                />
-                <text
-                  x={W - legendW + 9 * unit}
-                  y={H - legendH + (5.4 + index * 6) * unit}
-                  fontSize={3.5 * unit}
-                  fill="#374151"
-                >
-                  {pointKindLabel(kind)}
-                </text>
-              </g>
-            ))}
-          </g>
-        )}
       </svg>
           </div>
         </>
       )}
+      {showLegend && legendKinds.length > 0 && (
+        <section
+          data-map-external-legend="true"
+          aria-label="Map symbol legend"
+          className="mt-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700"
+        >
+          <p className="font-semibold text-gray-800">Map symbols</p>
+          <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1.5">
+            {legendKinds.map((kind) => (
+              <li key={kind} className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-2.5 w-2.5 rounded-full ring-1 ring-white"
+                  style={{ backgroundColor: pointColor(kind) }}
+                />
+                <span aria-hidden="true">{pointKindIcon(kind)}</span>
+                <span>{pointKindLabel(kind)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <VenueMapPointGuidance points={map.points} compact={editable} />
+      <VenueMapDrawingGuidance drawings={map.drawings || []} compact={editable} />
+      <VenueMapRouteGuidance routes={map.routes || []} compact={editable} />
       {editable && onSelectPoint && map.points.length > 0 && (
         <details className="no-print mt-2 rounded-lg border border-gray-200 bg-white text-sm spm-studio-chrome">
           <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-2 px-3 py-2 font-semibold text-gray-700">
@@ -718,7 +1256,7 @@ export function VenueMapCanvas({
                   type="button"
                   onClick={() => onSelectPoint(point.id)}
                   aria-pressed={selected}
-                  aria-label={`Select ${point.label} for editing. ${pointKindLabel(point.kind)} at X ${point.x}, Y ${point.y}.`}
+                  aria-label={`Select ${point.label} for editing. ${venueMapPointTypeLabel(point)} at X ${point.x}, Y ${point.y}.`}
                   className={`flex min-h-11 w-full items-center gap-2 rounded-lg border px-3 py-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 ${
                     selected
                       ? 'border-teal-500 bg-teal-50 text-teal-950'
@@ -729,7 +1267,7 @@ export function VenueMapCanvas({
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-semibold">{point.label}</span>
                     <span className="block text-xs text-gray-500">
-                      {pointKindLabel(point.kind)} · X {point.x}, Y {point.y}
+                      {venueMapPointTypeLabel(point)} · X {point.x}, Y {point.y}
                     </span>
                   </span>
                 </button>
@@ -750,14 +1288,14 @@ export function VenueMapCanvas({
             {nonActionableFallbackPoints.map((point) => (
               <li key={point.id} className="rounded-lg border border-gray-200 px-3 py-2 text-gray-700">
                 <span className="font-semibold">{pointKindIcon(point.kind)} {point.label}</span>
-                <span className="block text-xs text-gray-500">{pointKindLabel(point.kind)}</span>
+                <span className="block text-xs text-gray-500">{venueMapPointTypeLabel(point)}</span>
               </li>
             ))}
           </ul>
         </details>
       )}
       {actionablePoints.length > 0 && (
-        <details className="mt-2 rounded-lg border border-gray-200 bg-white text-sm">
+        <details className="no-print spm-studio-chrome mt-2 rounded-lg border border-gray-200 bg-white text-sm">
           <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-2 px-3 py-2 font-semibold text-gray-700">
             <span>Map location actions</span>
             <span className="text-xs font-normal text-gray-500">{actionablePoints.length} location{actionablePoints.length === 1 ? '' : 's'}</span>
@@ -769,7 +1307,7 @@ export function VenueMapCanvas({
                 type="button"
                 onClick={() => onPointClick?.(point)}
                 className="flex min-h-11 w-full items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-left text-gray-700 hover:border-teal-300 hover:bg-teal-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
-                aria-label={`${pointKindLabel(point.kind)}: ${point.label}. ${pointActionDescription(point)}`}
+                aria-label={`${venueMapPointTypeLabel(point)}: ${point.label}. ${pointActionDescription(point)}`}
               >
                 <span aria-hidden="true">{pointKindIcon(point.kind)}</span>
                 <span className="min-w-0 flex-1">
@@ -782,11 +1320,8 @@ export function VenueMapCanvas({
         </details>
       )}
       <p className="sr-only">
-        {map.points.map((point) => `${pointKindLabel(point.kind)}: ${point.label}${point.description ? `. ${point.description}` : ''}.`).join(' ')}
-        {hideSpatialMap
-          ? ' Spatial walkways and zones are hidden until the property base map is available.'
-          : (map.routes || []).map((route) => ` Walkway: ${route.name}. Routing priority: ${routePriorityLabel(route.priority)}. ${route.accessibility === 'step-free' ? 'Venue-verified step-free.' : route.accessibility === 'not-step-free' ? 'Not step-free.' : 'Mobility status not verified.'}${route.notes ? ` ${route.notes}` : ''}`).join('')}
-        {!hideSpatialMap && (map.drawings || []).filter((drawing) => drawing.text).map((drawing) => ` Map shape: ${drawing.text}.`).join('')}
+        {map.points.map((point) => `${venueMapPointTypeLabel(point)}: ${point.label}.`).join(' ')}
+        {hideSpatialMap && ' Spatial walkways and zones are hidden until the property base map is available.'}
       </p>
     </div>
   );

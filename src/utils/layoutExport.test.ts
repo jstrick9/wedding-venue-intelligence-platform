@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildAccessibleHtmlArtifact,
   buildPdfFromJpeg,
   cloneAndNormalizeSvg,
   inlineSvgImages,
@@ -16,6 +17,33 @@ function jpegBytes(len: number): Uint8Array {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe('accessible HTML artifact', () => {
+  it('creates semantic self-contained text and escapes every authored value', () => {
+    const html = buildAccessibleHtmlArtifact({
+      title: 'Rose <script>alert(1)</script> Estate',
+      summary: 'Two locations & one route.',
+      metadata: [{ label: 'Audience', value: 'Guest "A"' }],
+      sections: [{
+        heading: 'Locations',
+        entries: [{
+          heading: 'West <Gate>',
+          details: ['Guidance: Use A&B\nthen ring the bell.'],
+        }],
+      }],
+    });
+
+    expect(html).toContain('<html lang="en">');
+    expect(html).toContain('<main>');
+    expect(html).toContain('<h2>Locations</h2>');
+    expect(html).toContain('Rose &lt;script&gt;alert(1)&lt;/script&gt; Estate');
+    expect(html).toContain('West &lt;Gate&gt;');
+    expect(html).toContain('Use A&amp;B\nthen ring the bell.');
+    expect(html).toContain('Guest &quot;A&quot;');
+    expect(html).not.toContain('<script>');
+    expect(html).not.toMatch(/<script|https?:\/\//i);
+  });
 });
 
 describe('SVG export preparation', () => {
@@ -36,6 +64,21 @@ describe('SVG export preparation', () => {
     expect(clone.querySelector('circle')).toHaveAttribute('cx', '50');
   });
 
+  it('removes explicitly marked editor-only map artifacts from the export clone', () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const authored = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    authored.setAttribute('data-authored-pin', 'true');
+    const editorGuide = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    editorGuide.setAttribute('data-map-export-exclude', 'true');
+    editorGuide.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'polyline'));
+    svg.append(authored, editorGuide);
+
+    const clone = cloneAndNormalizeSvg(svg, 100, 80, '0 0 100 80');
+    expect(clone.querySelector('[data-authored-pin="true"]')).not.toBeNull();
+    expect(clone.querySelector('[data-map-export-exclude="true"]')).toBeNull();
+    expect(svg.querySelector('[data-map-export-exclude="true"]')).not.toBeNull();
+  });
+
   it('renders an optional classification footer outside the authored map area', async () => {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 100 80');
@@ -52,6 +95,7 @@ describe('SVG export preparation', () => {
       lineTo: vi.fn(),
       stroke: vi.fn(),
       fillText: vi.fn(),
+      measureText: vi.fn((text: string) => ({ width: text.length * 7 })),
     };
     const contextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
       .mockReturnValue(context as unknown as CanvasRenderingContext2D);
@@ -71,15 +115,169 @@ describe('SVG export preparation', () => {
     });
 
     expect(result.width).toBe(120);
-    expect(result.height).toBe(132);
+    expect(result.height).toBe(172);
     expect(context.drawImage).toHaveBeenCalledWith(expect.anything(), 10, 10, 100, 80);
-    expect(context.fillText).toHaveBeenCalledWith(
-      'STAFF MASTER | Exported 9/7/2026',
-      10,
-      expect.any(Number),
-      100,
-    );
+    const footerLines = context.fillText.mock.calls.map(([text]) => text);
+    expect(footerLines.join(' ')).toBe('STAFF MASTER | Exported 9/7/2026');
+    expect(context.fillText.mock.calls.every((call) => call.length === 3)).toBe(true);
     contextSpy.mockRestore();
+  });
+
+  it('renders an artifact title above rather than over authored map coordinates', async () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 100 80');
+    const context = {
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 0,
+      font: '',
+      textBaseline: '',
+      fillRect: vi.fn(),
+      drawImage: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+      fillText: vi.fn(),
+      measureText: vi.fn((text: string) => ({ width: text.length * 7 })),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    class LoadedImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    vi.stubGlobal('Image', LoadedImage);
+
+    const result = await renderSvgToCanvas(svg, {
+      scale: 1,
+      padding: 10,
+      headerText: 'Rose & Pine Estate',
+    });
+
+    expect(result).toEqual(expect.objectContaining({ width: 120, height: 162 }));
+    expect(context.drawImage).toHaveBeenCalledWith(expect.anything(), 10, 72, 100, 80);
+    expect(context.fillText).toHaveBeenCalledWith('Rose & Pine', 10, 10);
+    expect(context.fillText).toHaveBeenCalledWith('Estate', 10, 35);
+  });
+
+  it('renders every supplemental guidance entry below the authored map', async () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 180 80');
+    const context = {
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 0,
+      font: '',
+      textBaseline: '',
+      fillRect: vi.fn(),
+      drawImage: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+      fillText: vi.fn(),
+      measureText: vi.fn((text: string) => ({ width: text.length * 7 })),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    class LoadedImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    vi.stubGlobal('Image', LoadedImage);
+
+    const result = await renderSvgToCanvas(svg, {
+      scale: 1,
+      padding: 10,
+      supplementalSections: [{
+        heading: 'If the venue activates its rain plan',
+        entries: [
+          'Ceremony Garden → Grand Ballroom — Enter through the east doors.',
+          'South Lawn → Gallery',
+        ],
+      }],
+      footerText: 'Guest portal preview',
+    });
+
+    expect(result.height).toBeGreaterThan(132);
+    const renderedText = context.fillText.mock.calls.map(([text]) => text).join(' ');
+    expect(renderedText).toContain('If the venue activates its rain plan');
+    expect(renderedText).toContain('Ceremony Garden → Grand Ballroom — Enter through the east doors.');
+    expect(renderedText).toContain('South Lawn → Gallery');
+    expect(renderedText).toContain('Guest portal preview');
+  });
+
+  it('scales supplemental and provenance typography with adaptive raster width', async () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 100 80');
+    const context = {
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 0,
+      font: '',
+      textBaseline: '',
+      fillRect: vi.fn(),
+      drawImage: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+      fillText: vi.fn(),
+      measureText: vi.fn((text: string) => ({ width: text.length * 7 })),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    class LoadedImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    vi.stubGlobal('Image', LoadedImage);
+
+    const result = await renderSvgToCanvas(svg, {
+      scale: 20,
+      padding: 10,
+      supplementalSections: [{
+        heading: 'Walkways & access notes',
+        entries: ['Garden promenade — Keep the east gate clear.'],
+      }],
+      footerText: 'Saved canonical map | Staff master',
+    });
+
+    expect(result.width).toBe(2_020);
+    expect(result.height).toBe(1_856);
+    expect(context.font).toBe('600 26px sans-serif');
+    expect(context.lineWidth).toBe(2);
+  });
+
+  it('fails explicitly rather than truncating guidance that exceeds safe canvas limits', async () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 100 80');
+    const context = {
+      font: '',
+      measureText: vi.fn((text: string) => ({ width: text.length * 7 })),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(context as unknown as CanvasRenderingContext2D);
+
+    await expect(renderSvgToCanvas(svg, {
+      scale: 1,
+      supplementalSections: [{
+        heading: 'Rain plan',
+        entries: Array.from({ length: 1_000 }, (_, index) =>
+          `Plan ${index}: ${'Follow venue signs. '.repeat(20)}`,
+        ),
+      }],
+    })).rejects.toThrow(/too large.*Narrow the preview scope/i);
   });
 
   it('embeds a remote raster image instead of silently deleting it', async () => {

@@ -1,20 +1,35 @@
 import { describe, it, expect } from 'vitest';
 import {
-  addMapDrawing, addMapPoint, moveMapPoint, updateMapDrawing, updateMapPoint, removeMapPoint,
+  addMapDrawing, addMapPoint, appendMapLineVertex, buildVenueMapDirectionSteps, moveMapDrawing, moveMapPoint, updateMapDrawing, updateMapPoint, removeMapPoint,
   addMapRoute, removeMapRoute, renameMapRoute, duplicateMapPoint, routePoints, pointColor, updateMapSize,
-  findVenueMapRoute, partitionVenueMapDrawingIntegrity, partitionVenueMapDuplicateIdentities,
-  partitionVenueMapRainContingencyCollisions, partitionVenueMapRouteReferenceIntegrity,
-  projectVenueMap, projectVenueMapCurrentSpaceLinks, rainContingencyCollisionIssues,
+  findVenueMapRoute, hasRenderableVenueMapContent, isVenueMapGuestArrivalPoint,
+  partitionVenueMapBaseImageIntegrity, partitionVenueMapDrawingIntegrity,
+  partitionVenueMapDuplicateIdentities, partitionVenueMapIdentifierIntegrity,
+  partitionVenueMapRainContingencyCollisions,
+  partitionVenueMapRouteReferenceIntegrity,
+  partitionVenueMapSpacePointLinkCollisions, partitionVenueMapTextIntegrity,
+  preferredVenueMapDirectionsStart, projectVenueMap, projectVenueMapCurrentSpaceLinks,
+  rainContingencyCollisionIssues,
   rainContingencyValidationIssue,
-  unavailableVenueMapEventScopeIds, updateMapRoute, venueMapDrawingIntegrityIssue,
-  INVALID_VENUE_MAP_ROUTE_PRIORITY, venueMapEventScopeRecoveryLabel,
+  unavailableVenueMapEventScopeIds, updateMapRoute, venueMapDrawingBounds,
+  venueMapDrawingIntegrityIssue, venueMapDrawingPresentationIssues,
+  venueMapDrawingRotationIssue, INVALID_VENUE_MAP_ROUTE_PRIORITY,
+  venueMapEventScopeRecoveryLabel,
   venueMapHasInvalidDrawingGeometry, venueMapHasInvalidRoutePriorities,
-  venueMapComplexityIssues, venueMapExceedsComplexityBudget,
-  venueMapPointCoordinateIssue, venueMapRoutePriorityIssue,
-  venueMapRouteReferenceIssues, venueMapSpacePointLinkIssue,
+  venueMapAudienceIntegrityIssues, venueMapBaseImageIntegrityIssues,
+  venueMapHasInvalidAudiences, venueMapComplexityIssues, venueMapExceedsComplexityBudget,
+  venueMapPointCoordinateIssue, venueMapPointGpsIssue,
+  venueMapRouteAccessibilityIntegrityIssues, venueMapRouteAccessibilityIssue,
+  venueMapRouteDeliveryIssues, venueMapRoutePriorityIssue,
+  venueMapHasRouteDeliveryIssues, venueMapRouteReferenceIssues, venueMapSpacePointLinkIssue,
+  venueMapTextIntegrityIssues, venueMapArtifactFilenameBase, venueMapArtifactRasterScale,
+  venueMapArrivalRoleIntegrityIssues, venueMapDirectionsContextKey,
+  venueMapGuestRouteCoverageIssues, venueMapPointArrivalRoleIssue, venueMapScopeArtifactCode,
+  VENUE_MAP_MAX_IDENTIFIER_LENGTH, VENUE_MAP_MAX_LINE_VERTICES,
   VENUE_MAP_MAX_POINTS, VENUE_MAP_MAX_ROUTE_POINTS, VENUE_MAP_MAX_SERIALIZED_BYTES,
 } from './venueMapDesigner';
 import { emptyVenueMapConfig } from '../services/wayfinding/venueWayfindingService';
+import type { Venue } from '../types';
 
 describe('venue map designer helpers', () => {
   it('adds a point clamped to bounds', () => {
@@ -24,6 +39,61 @@ describe('venue map designer helpers', () => {
     expect(map.points[0].x).toBe(100); // clamped to width 100
     expect(map.points[0].y).toBe(0);   // clamped to >= 0
     expect(map.points[0].kind).toBe('space');
+  });
+
+  it('recognizes renderable portal maps even when they contain no pins', () => {
+    const empty = emptyVenueMapConfig();
+    expect(hasRenderableVenueMapContent(empty)).toBe(false);
+    expect(hasRenderableVenueMapContent({
+      ...empty,
+      drawings: [{ id: 'garden', type: 'zone', x: 5, y: 5, width: 20, height: 10 }],
+    })).toBe(true);
+    expect(hasRenderableVenueMapContent({
+      ...empty,
+      backgroundImageUrl: 'data:image/png;base64,AA==',
+    })).toBe(true);
+    expect(hasRenderableVenueMapContent({
+      ...empty,
+      backgroundImageUnavailable: true,
+    })).toBe(true);
+    // Rain guidance is independently deliverable and must not be mistaken for
+    // drawable SVG content (portals render its guidance card without a blank map).
+    expect(hasRenderableVenueMapContent({
+      ...empty,
+      rainContingencies: [{
+        id: 'rain', outdoorVenueId: 'garden', indoorVenueId: 'ballroom',
+      }],
+    })).toBe(false);
+  });
+
+  it('creates order-independent full-set artifact codes for wedding-space scopes', () => {
+    const first = venueMapScopeArtifactCode(['garden', 'ballroom', 'gallery', 'terrace']);
+    expect(first).toMatch(/^v1-[a-f0-9]{32}$/);
+    expect(venueMapScopeArtifactCode(['terrace', 'gallery', 'garden', 'ballroom'])).toBe(first);
+    expect(venueMapScopeArtifactCode(['garden', 'ballroom', 'gallery', 'orchard']))
+      .not.toBe(first);
+    expect(venueMapScopeArtifactCode(['garden', 'garden', 'ballroom', 'gallery', 'terrace']))
+      .toBe(first);
+  });
+
+  it('bounds the readable venue filename segment without affecting provenance suffixes', () => {
+    const base = venueMapArtifactFilenameBase(
+      `The Extremely Long Wedding Property ${'and Event Pavilion '.repeat(20)}`,
+    );
+    expect(base.length).toBeLessThanOrEqual(64);
+    expect(base).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+    expect(venueMapArtifactFilenameBase('  Rose & Pine Estate  ')).toBe('rose-pine-estate');
+    expect(venueMapArtifactFilenameBase('婚礼会場')).toBe('venue-map');
+    expect(venueMapArtifactFilenameBase(undefined)).toBe('venue-map');
+  });
+
+  it('scales abstract Venue Map coordinates to print-usable bounded raster dimensions', () => {
+    expect(venueMapArtifactRasterScale(100, 80)).toBe(20);
+    expect(venueMapArtifactRasterScale(500, 500)).toBe(4);
+    expect(venueMapArtifactRasterScale(500, 20)).toBe(30);
+    expect(venueMapArtifactRasterScale(20, 500)).toBe(30);
+    expect(venueMapArtifactRasterScale(20, 20)).toBe(100);
+    expect(venueMapArtifactRasterScale(Number.NaN, 0)).toBe(20);
   });
 
   it('enforces bounded whole-map and per-object complexity budgets', () => {
@@ -76,6 +146,217 @@ describe('venue map designer helpers', () => {
     expect(venueMapExceedsComplexityBudget(undefined)).toBe(false);
   });
 
+  it('detects malformed mobility status and projects it only as not verified', () => {
+    const malformedRoute = {
+      id: 'garden-ramp',
+      name: 'Garden ramp',
+      pointIds: ['gate', 'garden'],
+      accessibility: 'stepfree',
+      priority: 'standard',
+    } as any;
+    expect(venueMapRouteAccessibilityIssue(malformedRoute)).toMatch(/invalid/i);
+    expect(venueMapRouteAccessibilityIssue({ ...malformedRoute, accessibility: undefined })).toBeNull();
+    expect(venueMapRouteAccessibilityIntegrityIssues({ routes: [malformedRoute] })).toEqual([
+      expect.objectContaining({
+        routeId: 'garden-ramp',
+        savedValue: 'stepfree',
+      }),
+    ]);
+
+    const projected = projectVenueMap({
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Gate', kind: 'entry', x: 1, y: 1 },
+        { id: 'garden', label: 'Garden', kind: 'amenity', x: 2, y: 2 },
+      ],
+      routes: [malformedRoute],
+    }, 'couple');
+    expect(projected.routes).toEqual([
+      expect.objectContaining({ id: 'garden-ramp', accessibility: 'unknown' }),
+    ]);
+  });
+
+  it('detects exact malformed audiences and fails closed with dependent routes in projections', () => {
+    const malformedAudienceMap = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'restricted', label: 'Restricted point', kind: 'entry', x: 1, y: 1, audience: 'vip' },
+        { id: 'public', label: 'Public point', kind: 'entry', x: 2, y: 2, audience: 'public' },
+      ],
+      routes: [
+        {
+          id: 'dependent',
+          name: 'Dependent walkway',
+          pointIds: ['restricted', 'public'],
+          audience: 'public',
+          accessibility: 'unknown',
+          priority: 'standard',
+        },
+        {
+          id: 'invalid-route',
+          name: 'Invalid walkway visibility',
+          pointIds: ['public', 'public'],
+          audience: null,
+          accessibility: 'unknown',
+          priority: 'standard',
+        },
+      ],
+      drawings: [{ id: 'invalid-shape', type: 'zone', x: 5, y: 5, width: 10, height: 10, audience: false }],
+    } as any;
+
+    expect(venueMapHasInvalidAudiences(malformedAudienceMap)).toBe(true);
+    expect(venueMapAudienceIntegrityIssues(malformedAudienceMap)).toEqual([
+      expect.objectContaining({ family: 'point', objectId: 'restricted', savedValue: 'vip' }),
+      expect.objectContaining({ family: 'route', objectId: 'invalid-route', savedValue: null }),
+      expect.objectContaining({ family: 'drawing', objectId: 'invalid-shape', savedValue: false }),
+    ]);
+
+    const projected = projectVenueMap(malformedAudienceMap, 'couple');
+    expect(projected.points.map((point) => point.id)).toEqual(['public']);
+    expect(projected.routes).toEqual([]);
+    expect(projected.drawings).toEqual([]);
+  });
+
+  it('treats optional GPS as one valid pair and strips malformed values from projections', () => {
+    expect(venueMapPointGpsIssue({})).toBeNull();
+    expect(venueMapPointGpsIssue({ lat: 35.2 })).toMatch(/provided together/i);
+    expect(venueMapPointGpsIssue({ lat: 91, lng: -80 })).toMatch(/-90 to 90/i);
+    expect(venueMapPointGpsIssue({ lat: 35, lng: -181 })).toMatch(/-180 to 180/i);
+    expect(venueMapPointGpsIssue({ lat: 35.2, lng: -80.8 })).toBeNull();
+
+    const projected = projectVenueMap({
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'partial', label: 'Partial', kind: 'entry', x: 1, y: 1, lat: 35.2 },
+        { id: 'valid', label: 'Valid', kind: 'entry', x: 2, y: 2, lat: 35.3, lng: -80.9 },
+      ],
+    }, 'staff');
+    expect(projected.points).toEqual([
+      expect.objectContaining({ id: 'partial', lat: undefined, lng: undefined }),
+      expect.objectContaining({ id: 'valid', lat: 35.3, lng: -80.9 }),
+    ]);
+  });
+
+  it('fails closed for malformed identities even when projection receives an unnormalized map', () => {
+    const overlongId = `point-${'x'.repeat(VENUE_MAP_MAX_IDENTIFIER_LENGTH)}`;
+    const source = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: overlongId, label: 'Unsafe', kind: 'entry' as const, x: 1, y: 1 },
+        { id: 'safe-a', label: 'Parking', kind: 'parking' as const, x: 10, y: 10 },
+        { id: 'safe-b', label: 'Ballroom', kind: 'amenity' as const, x: 20, y: 20 },
+      ],
+      routes: [
+        { id: 'depends-on-unsafe', name: 'Unsafe', pointIds: ['safe-a', overlongId] },
+        { id: 'safe-route', name: 'Safe', pointIds: ['safe-a', 'safe-b'] },
+      ],
+      drawings: [{ id: overlongId, type: 'circle' as const, x: 30, y: 30, radius: 5 }],
+      rainContingencies: [{
+        id: overlongId,
+        outdoorVenueId: 'garden',
+        indoorVenueId: 'hall',
+      }],
+    };
+
+    const partitioned = partitionVenueMapIdentifierIntegrity(source);
+    expect(partitioned.points.map((point) => point.id)).toEqual(['safe-a', 'safe-b']);
+    expect(partitioned.routes.map((route) => route.id)).toEqual(['safe-route']);
+    expect(partitioned.drawings).toEqual([]);
+    expect(partitioned.rainContingencies).toEqual([]);
+
+    const projected = projectVenueMap(source, 'staff');
+    expect(projected.points.map((point) => point.id)).toEqual(['safe-a', 'safe-b']);
+    expect(projected.routes.map((route) => route.id)).toEqual(['safe-route']);
+    expect(projected.drawings).toEqual([]);
+    expect(projected.rainContingencies).toEqual([]);
+  });
+
+  it('identifies invalid canonical text and fails dependent portal routes closed', () => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'good', label: 'Main gate', kind: 'entry' as const, x: 1, y: 1 },
+        {
+          id: 'overlong-guidance',
+          label: 'Garden turn',
+          description: 'x'.repeat(1001),
+          kind: 'path' as const,
+          x: 2,
+          y: 2,
+        },
+        { id: 'blank', label: '   ', kind: 'amenity' as const, x: 3, y: 3 },
+      ],
+      routes: [
+        { id: 'dependent', name: 'Garden route', pointIds: ['good', 'overlong-guidance'] },
+        { id: 'overlong-name', name: 'n'.repeat(201), pointIds: ['good', 'blank'] },
+      ],
+      drawings: [{
+        id: 'shape',
+        type: 'zone' as const,
+        x: 5,
+        y: 5,
+        width: 10,
+        height: 10,
+        text: 's'.repeat(301),
+      }],
+      rainContingencies: [{
+        id: 'rain',
+        outdoorVenueId: 'garden',
+        indoorVenueId: 'hall',
+        note: 'r'.repeat(1001),
+      }],
+    };
+
+    expect(venueMapTextIntegrityIssues(map)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ family: 'point', objectId: 'overlong-guidance', field: 'description', reason: 'too-long' }),
+      expect.objectContaining({ family: 'point', objectId: 'blank', field: 'label', reason: 'blank' }),
+      expect.objectContaining({ family: 'route', objectId: 'overlong-name', field: 'name', reason: 'too-long' }),
+      expect.objectContaining({ family: 'drawing', objectId: 'shape', field: 'text', reason: 'too-long' }),
+      expect.objectContaining({ family: 'rainContingency', objectId: 'rain', field: 'note', reason: 'too-long' }),
+    ]));
+
+    const safe = partitionVenueMapTextIntegrity(map);
+    expect(safe.points.map((point) => point.id)).toEqual(['good']);
+    expect(safe.routes).toEqual([]);
+    expect(safe.drawings).toEqual([]);
+    expect(safe.rainContingencies).toEqual([]);
+    expect(projectVenueMap(map, 'couple')).toMatchObject({
+      points: [expect.objectContaining({ id: 'good' })],
+      routes: [],
+      drawings: [],
+      rainContingencies: [],
+    });
+  });
+
+  it('adds a distinct in-frame line vertex and refuses to exceed the vertex budget', () => {
+    const edgePoints = [{ x: 95, y: 80 }, { x: 100, y: 80 }];
+    const appended = appendMapLineVertex(edgePoints, 100, 80);
+    expect(appended).toHaveLength(3);
+    expect(appended[2]).not.toEqual(appended[1]);
+    expect(appended[2].x).toBeGreaterThanOrEqual(0);
+    expect(appended[2].x).toBeLessThanOrEqual(100);
+    expect(appended[2].y).toBeGreaterThanOrEqual(0);
+    expect(appended[2].y).toBeLessThanOrEqual(80);
+
+    const occupiedNearby = [
+      { x: 10, y: 10 },
+      { x: 15, y: 10 },
+      { x: 5, y: 10 },
+      { x: 10, y: 15 },
+      { x: 10, y: 5 },
+      { x: 10, y: 10 },
+    ];
+    const fallback = appendMapLineVertex(occupiedNearby, 100, 80);
+    expect(fallback).toHaveLength(occupiedNearby.length + 1);
+    expect(occupiedNearby).not.toContainEqual(fallback[fallback.length - 1]);
+
+    const atLimit = Array.from({ length: VENUE_MAP_MAX_LINE_VERTICES }, (_, index) => ({
+      x: index,
+      y: 1,
+    }));
+    expect(appendMapLineVertex(atLimit, 500, 80)).toBe(atLimit);
+  });
+
   it('moves a point (clamped) and updates metadata', () => {
     let map = addMapPoint(emptyVenueMapConfig(), { label: 'Parking A', kind: 'parking', x: 10, y: 10 });
     const id = map.points[0].id;
@@ -85,6 +366,30 @@ describe('venue map designer helpers', () => {
     map = updateMapPoint(map, id, { label: 'Parking A (West)', lat: 35.1, lng: -80.8 });
     expect(map.points[0].label).toBe('Parking A (West)');
     expect(map.points[0].lat).toBe(35.1);
+  });
+
+  it('clears kind-inapplicable point metadata during live updates', () => {
+    let map = addMapPoint(emptyVenueMapConfig(), {
+      label: 'Scoped restroom',
+      kind: 'amenity',
+      x: 10,
+      y: 10,
+      eventSpaceIds: ['garden'],
+    });
+    const id = map.points[0].id;
+
+    map = updateMapPoint(map, id, { kind: 'space', venueId: 'garden' });
+    expect(map.points[0]).toMatchObject({ kind: 'space', venueId: 'garden' });
+    expect(map.points[0].eventSpaceIds).toBeUndefined();
+
+    map = updateMapPoint(map, id, { kind: 'entry', arrivalRole: 'both' });
+    expect(map.points[0]).toMatchObject({ kind: 'entry', arrivalRole: 'both' });
+    expect(map.points[0].venueId).toBeUndefined();
+
+    map = updateMapPoint(map, id, { kind: 'parking' });
+    expect(map.points[0].kind).toBe('parking');
+    expect(map.points[0].venueId).toBeUndefined();
+    expect(map.points[0].arrivalRole).toBeUndefined();
   });
 
   it('removes a point without inventing a direct segment in dependent routes', () => {
@@ -174,6 +479,99 @@ describe('venue map designer helpers', () => {
     expect(map.drawings?.[1]).toMatchObject({ x: 20, y: 60, radius: 20 });
   });
 
+  it('translates whole rectangle, circle, and line shapes without distortion or overflow', () => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      drawings: [
+        { id: 'zone', type: 'zone', x: 80, y: 60, width: 20, height: 20 },
+        { id: 'circle', type: 'circle', x: 10, y: 10, radius: 10 },
+        { id: 'line', type: 'line', x: 0, y: 0, points: [{ x: 5, y: 5 }, { x: 25, y: 15 }] },
+      ],
+    };
+
+    const movedZone = moveMapDrawing(map, 'zone', 50, 50);
+    expect(movedZone.drawings?.[0]).toMatchObject({ x: 80, y: 60 });
+
+    const movedCircle = moveMapDrawing(movedZone, 'circle', -50, 8);
+    expect(movedCircle.drawings?.[1]).toMatchObject({ x: 10, y: 18, radius: 10 });
+
+    const movedLine = moveMapDrawing(movedCircle, 'line', -10, 70);
+    expect(movedLine.drawings?.[2].points).toEqual([
+      { x: 0, y: 70 },
+      { x: 20, y: 80 },
+    ]);
+  });
+
+  it('withholds a malformed base source or opacity instead of rewriting it', () => {
+    const malformedBaseMap = {
+      ...emptyVenueMapConfig(),
+      backgroundImageUrl: 'javascript:alert(1)',
+      backgroundOpacity: 99,
+    } as any;
+    expect(venueMapBaseImageIntegrityIssues(malformedBaseMap)).toEqual([
+      expect.objectContaining({ field: 'backgroundImageUrl', savedValue: 'javascript:alert(1)' }),
+      expect.objectContaining({ field: 'backgroundOpacity', savedValue: 99 }),
+    ]);
+    expect(venueMapBaseImageIntegrityIssues({
+      ...emptyVenueMapConfig(),
+      backgroundImageUrl: 'https://example.com/map.png',
+      backgroundOpacity: 0.1,
+    })).toEqual([]);
+    expect(venueMapBaseImageIntegrityIssues({
+      ...emptyVenueMapConfig(),
+      backgroundOpacity: 0.8,
+    })).toEqual([
+      expect.objectContaining({ field: 'backgroundOpacity', savedValue: 0.8 }),
+    ]);
+
+    const safe = partitionVenueMapBaseImageIntegrity(malformedBaseMap);
+    expect(safe).toMatchObject({
+      backgroundImageUrl: undefined,
+      backgroundOpacity: undefined,
+      backgroundImageUnavailable: true,
+    });
+    expect(projectVenueMap(malformedBaseMap, 'couple')).toMatchObject({
+      backgroundImageUrl: undefined,
+      backgroundOpacity: undefined,
+      backgroundImageUnavailable: true,
+    });
+  });
+
+  it('quarantines a whole shape instead of rewriting malformed SVG appearance', () => {
+    const malformedAppearance = {
+      id: 'hidden-zone',
+      type: 'zone',
+      x: 10,
+      y: 10,
+      width: 20,
+      height: 10,
+      fillColor: 'url(https://tracker.example/pixel)',
+      strokeColor: null,
+      strokeWidth: 40,
+      opacity: -1,
+      fontSize: 'large',
+    } as any;
+    expect(venueMapDrawingPresentationIssues(malformedAppearance)).toEqual([
+      expect.objectContaining({ field: 'fillColor', savedValue: 'url(https://tracker.example/pixel)' }),
+      expect.objectContaining({ field: 'strokeColor', savedValue: null }),
+      expect.objectContaining({ field: 'strokeWidth', savedValue: 40 }),
+      expect.objectContaining({ field: 'opacity', savedValue: -1 }),
+      expect.objectContaining({ field: 'fontSize', savedValue: 'large' }),
+    ]);
+    expect(venueMapDrawingPresentationIssues({
+      ...malformedAppearance,
+      fillColor: 'transparent',
+      strokeColor: '#0f766e',
+      strokeWidth: 1,
+      opacity: 0,
+      fontSize: 12,
+    })).toEqual([]);
+
+    const map = { ...emptyVenueMapConfig(), drawings: [malformedAppearance] };
+    expect(partitionVenueMapDrawingIntegrity(map).map.drawings).toEqual([]);
+    expect(projectVenueMap(map, 'couple').drawings).toEqual([]);
+  });
+
   it('quarantines unsupported and malformed shapes while retaining all known valid geometry', () => {
     const validShapes = [
       { id: 'zone', type: 'zone', x: 1, y: 1, width: 10, height: 8 },
@@ -187,6 +585,7 @@ describe('venue map designer helpers', () => {
       { id: 'radiusless', type: 'circle', x: 5, y: 5 },
       { id: 'short-line', type: 'line', x: 0, y: 0, points: [{ x: 1, y: 1 }] },
       { id: 'zero-line', type: 'line', x: 0, y: 0, points: [{ x: 1, y: 1 }, { x: 1, y: 1 }] },
+      { id: 'over-rotated', type: 'rectangle', x: 40, y: 25, width: 20, height: 10, rotation: 450 },
     ];
     const map = {
       ...emptyVenueMapConfig(),
@@ -204,9 +603,61 @@ describe('venue map designer helpers', () => {
     expect(venueMapDrawingIntegrityIssue(validShapes[3] as any)).toBeNull();
     expect(venueMapDrawingIntegrityIssue(invalidShapes[0] as any)).toMatch(/not supported/i);
     expect(venueMapDrawingIntegrityIssue(invalidShapes[4] as any)).toMatch(/different vertex/i);
+    expect(venueMapDrawingRotationIssue(invalidShapes[5] as any)).toMatch(/-360° to 360°/i);
     expect(projectVenueMap(map, 'guest').drawings?.map((drawing) => drawing.id)).toEqual(
       validShapes.map((drawing) => drawing.id),
     );
+  });
+
+  it('quarantines every shape whose rendered geometry crosses the map frame', () => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      drawings: [
+        { id: 'valid-rotated', type: 'rectangle', x: 40, y: 25, width: 20, height: 20, rotation: 45 },
+        { id: 'outside-rectangle', type: 'zone', x: 90, y: 10, width: 20, height: 10 },
+        { id: 'outside-circle', type: 'circle', x: 5, y: 20, radius: 10 },
+        { id: 'outside-line', type: 'line', x: 0, y: 0, points: [{ x: 1, y: 1 }, { x: 101, y: 2 }] },
+        { id: 'outside-rotated', type: 'rectangle', x: 0, y: 0, width: 20, height: 20, rotation: 45 },
+      ],
+    } as any;
+
+    const partition = partitionVenueMapDrawingIntegrity(map);
+    expect(partition.map.drawings?.map((drawing) => drawing.id)).toEqual(['valid-rotated']);
+    expect(partition.quarantinedDrawings.map((drawing) => drawing.id)).toEqual([
+      'outside-rectangle',
+      'outside-circle',
+      'outside-line',
+      'outside-rotated',
+    ]);
+    expect(venueMapDrawingIntegrityIssue(map.drawings[4], map)).toMatch(/outside.*map frame/i);
+    expect(projectVenueMap(map, 'guest').drawings?.map((drawing) => drawing.id))
+      .toEqual(['valid-rotated']);
+  });
+
+  it('constrains authored and moved rotated shapes by their rendered corners', () => {
+    let map = addMapDrawing(emptyVenueMapConfig(), {
+      id: 'rotated-zone',
+      type: 'zone',
+      x: 0,
+      y: 0,
+      width: 20,
+      height: 20,
+      rotation: 45,
+    });
+    let drawing = map.drawings![0];
+    expect(venueMapDrawingIntegrityIssue(drawing, map)).toBeNull();
+    expect(venueMapDrawingBounds(drawing).minX).toBeCloseTo(0);
+    expect(venueMapDrawingBounds(drawing).minY).toBeCloseTo(0);
+
+    map = moveMapDrawing(map, 'rotated-zone', 500, 500);
+    drawing = map.drawings![0];
+    const movedBounds = venueMapDrawingBounds(drawing);
+    expect(movedBounds.maxX).toBeLessThanOrEqual(map.width);
+    expect(movedBounds.maxX).toBeGreaterThan(map.width - 0.1);
+    expect(movedBounds.maxY).toBeLessThanOrEqual(map.height);
+    expect(movedBounds.maxY).toBeGreaterThan(map.height - 0.1);
+    expect(drawing).toMatchObject({ width: 20, height: 20, rotation: 45 });
+    expect(venueMapDrawingIntegrityIssue(drawing, map)).toBeNull();
   });
 
   it('clamps size input to sane bounds and ignores non-finite values', () => {
@@ -220,12 +671,12 @@ describe('venue map designer helpers', () => {
 
   it('duplicates a point at a small offset, labeled "(copy)"', () => {
     let map = emptyVenueMapConfig();
-    map = addMapPoint(map, { label: 'Ceremony', kind: 'space', x: 30, y: 30, venueId: 'garden' });
+    map = addMapPoint(map, { label: 'Parking', kind: 'parking', x: 30, y: 30 });
     const id = map.points[0].id;
     map = duplicateMapPoint(map, id);
     expect(map.points).toHaveLength(2);
     const copy = map.points[1];
-    expect(copy.label).toBe('Ceremony (copy)');
+    expect(copy.label).toBe('Parking (copy)');
     expect(copy.x).toBeGreaterThan(30); // offset in +x
     expect(copy.y).toBeGreaterThan(30); // offset in +y
     expect(copy.id).not.toBe(id);
@@ -233,7 +684,7 @@ describe('venue map designer helpers', () => {
 
   it('duplicate is clamped to bounds and does not copy route membership', () => {
     let map = emptyVenueMapConfig(); // 100 x 80
-    map = addMapPoint(map, { label: 'Edge', kind: 'space', x: 95, y: 75 });
+    map = addMapPoint(map, { label: 'Edge', kind: 'amenity', x: 95, y: 75 });
     map = addMapPoint(map, { label: 'Other', kind: 'entry', x: 5, y: 5 });
     map = addMapRoute(map, 'Walkway', map.points.map((p) => p.id));
     const id = map.points[0].id;
@@ -535,14 +986,22 @@ describe('venue map designer helpers', () => {
         { id: 'terrace-pin', label: 'Terrace', kind: 'space', venueId: 'terrace', x: 30, y: 30 },
       ],
       rainContingencies: [
-        { id: 'valid', outdoorVenueId: 'lawn', indoorVenueId: 'hall' },
+        {
+          id: 'valid',
+          outdoorVenueId: 'lawn',
+          indoorVenueId: 'hall',
+          note: 'Follow the covered walkway to the hall.',
+        },
         { id: 'invalid', outdoorVenueId: 'terrace', indoorVenueId: 'lawn' },
       ],
     } as any;
     const guest = projectVenueMap(map, 'guest', ['lawn'], { venues });
-    expect(guest.rainContingencies).toEqual([
-      { id: 'valid', outdoorVenueId: 'lawn', indoorVenueId: 'hall', note: undefined },
-    ]);
+    expect(guest.rainContingencies).toEqual([{
+      id: 'valid',
+      outdoorVenueId: 'lawn',
+      indoorVenueId: 'hall',
+      note: 'Follow the covered walkway to the hall.',
+    }]);
     expect(guest.points.map((point) => point.venueId)).toEqual(['lawn', 'hall']);
   });
 
@@ -605,6 +1064,37 @@ describe('venue map designer helpers', () => {
     });
     expect(projected.points.map((point) => point.id)).toEqual(['gate']);
     expect(projected.routes).toEqual([]);
+  });
+
+  it('quarantines every space pin sharing one venue link and all dependent routes', () => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Gate', kind: 'entry', x: 1, y: 1 },
+        { id: 'garden-a', label: 'Garden A', kind: 'space', venueId: 'garden', x: 10, y: 10 },
+        { id: 'garden-b', label: 'Garden B', kind: 'space', venueId: ' garden ', x: 20, y: 20 },
+        { id: 'hall', label: 'Hall', kind: 'space', venueId: 'hall', x: 30, y: 30 },
+      ],
+      routes: [
+        { id: 'route-a', name: 'A', pointIds: ['gate', 'garden-a'] },
+        { id: 'route-b', name: 'B', pointIds: ['gate', 'garden-b'] },
+        { id: 'hall-route', name: 'Hall', pointIds: ['gate', 'hall'] },
+      ],
+    } as any;
+
+    expect(duplicateMapPoint(map, 'garden-a')).toBe(map);
+
+    const partition = partitionVenueMapSpacePointLinkCollisions(map);
+    expect(partition.collisionGroups).toEqual([
+      expect.objectContaining({ venueId: 'garden', points: [map.points[1], map.points[2]] }),
+    ]);
+    expect(partition.map.points.map((point) => point.id)).toEqual(['gate', 'hall']);
+    expect(partition.map.routes.map((route) => route.id)).toEqual(['hall-route']);
+    expect(partition.dependentRoutes.map((route) => route.id)).toEqual(['route-a', 'route-b']);
+
+    const projected = projectVenueMap(map, 'couple');
+    expect(projected.points.map((point) => point.id)).toEqual(['gate', 'hall']);
+    expect(projected.routes.map((route) => route.id)).toEqual(['hall-route']);
   });
 
   it('identifies stale and malformed event scopes without changing valid selections', () => {
@@ -708,11 +1198,84 @@ describe('venue map designer helpers', () => {
     expect(noEventContext.drawings?.map((drawing) => drawing.id)).toEqual(['global-zone']);
   });
 
+  it('finds route points that cannot serve the walkway audience or event scope', () => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Main Gate', kind: 'entry' as const, x: 5, y: 5, audience: 'public' as const },
+        { id: 'staff-turn', label: 'Service Turn', kind: 'path' as const, x: 20, y: 10, audience: 'staff' as const },
+        { id: 'ceremony-ramp', label: 'Ceremony Ramp', kind: 'path' as const, x: 30, y: 15, eventSpaceIds: ['ceremony'] },
+      ],
+      routes: [{
+        id: 'guest-walk',
+        name: 'Guest Walk',
+        audience: 'public' as const,
+        pointIds: ['gate', 'staff-turn', 'ceremony-ramp'],
+      }],
+    };
+
+    const issues = venueMapRouteDeliveryIssues(map);
+    expect(issues).toHaveLength(2);
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        point: expect.objectContaining({ id: 'staff-turn' }),
+        audienceIncompatible: true,
+        eventScopeIncompatible: false,
+      }),
+      expect.objectContaining({
+        point: expect.objectContaining({ id: 'ceremony-ramp' }),
+        audienceIncompatible: false,
+        eventScopeIncompatible: true,
+        routeTargetsAllEvents: true,
+      }),
+    ]));
+    expect(venueMapHasRouteDeliveryIssues(map)).toBe(true);
+    expect(projectVenueMap(map, 'guest', ['ceremony']).routes).toEqual([]);
+  });
+
+  it('accepts points that cover every claimed route viewer and selected event', () => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Main Gate', kind: 'entry' as const, x: 5, y: 5 },
+        { id: 'couple-turn', label: 'Couple Turn', kind: 'path' as const, x: 20, y: 10, audience: 'couple' as const, eventSpaceIds: ['ceremony', 'reception'] },
+      ],
+      routes: [{
+        id: 'couple-walk',
+        name: 'Couple Walk',
+        audience: 'couple' as const,
+        eventSpaceIds: ['ceremony'],
+        pointIds: ['gate', 'couple-turn'],
+      }],
+    };
+
+    expect(venueMapRouteDeliveryIssues(map)).toEqual([]);
+    expect(venueMapHasRouteDeliveryIssues(map)).toBe(false);
+  });
+
   it('finds only authored graph paths and can require verified step-free routes', () => {
     let map = emptyVenueMapConfig();
-    map = addMapPoint(map, { label: 'Parking', kind: 'parking', x: 5, y: 5 });
-    map = addMapPoint(map, { label: 'Junction', kind: 'path', x: 20, y: 10 });
-    map = addMapPoint(map, { label: 'Ceremony', kind: 'space', x: 40, y: 20 });
+    map = addMapPoint(map, {
+      label: 'Parking',
+      description: 'Meet beside the blue parking sign.',
+      kind: 'parking',
+      x: 5,
+      y: 5,
+    });
+    map = addMapPoint(map, {
+      label: 'Junction',
+      description: 'Turn left at the fountain.',
+      kind: 'path',
+      x: 20,
+      y: 10,
+    });
+    map = addMapPoint(map, {
+      label: 'Ceremony',
+      description: 'Check in with the usher.',
+      kind: 'space',
+      x: 40,
+      y: 20,
+    });
     map = addMapPoint(map, { label: 'Unconnected', kind: 'amenity', x: 80, y: 70 });
     const [parking, junction, ceremony, unconnected] = map.points.map((point) => point.id);
     map = addMapRoute(map, 'Parking Path', [parking, junction], { accessibility: 'step-free' });
@@ -720,8 +1283,227 @@ describe('venue map designer helpers', () => {
 
     const route = findVenueMapRoute(map, parking, ceremony, { stepFreeOnly: true });
     expect(route?.pointIds).toEqual([parking, junction, ceremony]);
+    expect(route?.segments.map((segment) => segment.route.name))
+      .toEqual(['Parking Path', 'Garden Path']);
     expect(route?.routes.map((item) => item.name)).toEqual(['Parking Path', 'Garden Path']);
+    expect(buildVenueMapDirectionSteps(map, route!)).toEqual([
+      'Start at Parking.',
+      'Meet beside the blue parking sign.',
+      'Follow route “Parking Path”. Mobility: Verified step-free.',
+      'At Junction: Turn left at the fountain.',
+      'Follow route “Garden Path”. Mobility: Verified step-free.',
+      'Use the ramp.',
+      'Arrive at Ceremony.',
+      'Check in with the usher.',
+    ]);
     expect(findVenueMapRoute(map, parking, unconnected)).toBeNull();
+  });
+
+  it.each([
+    ['step-free', 'Verified step-free'],
+    ['not-step-free', 'Not step-free'],
+    ['unknown', 'Mobility not verified'],
+  ] as const)('states %s mobility status in ordered directions', (accessibility, expectedLabel) => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'start', label: 'Parking', kind: 'parking' as const, x: 0, y: 0 },
+        { id: 'finish', label: 'Ceremony', kind: 'space' as const, x: 20, y: 0 },
+      ],
+      routes: [{
+        id: 'walk',
+        name: 'Arrival Walk',
+        pointIds: ['start', 'finish'],
+        accessibility,
+      }],
+    };
+    const path = findVenueMapRoute(map, 'start', 'finish');
+
+    expect(buildVenueMapDirectionSteps(map, path!)).toContain(
+      `Follow route “Arrival Walk”. Mobility: ${expectedLabel}.`,
+    );
+  });
+
+  it('counts only explicitly classified entries and parking as normal guest arrivals', () => {
+    const legacy = { id: 'legacy', label: 'Legacy door', kind: 'entry' as const, x: 1, y: 1 };
+    const exitOnly = { ...legacy, id: 'exit', arrivalRole: 'exit-only' as const };
+    const arrival = { ...legacy, id: 'arrival', arrivalRole: 'guest-arrival' as const };
+    const both = { ...legacy, id: 'both', arrivalRole: 'both' as const };
+    const parking = { ...legacy, id: 'parking', kind: 'parking' as const };
+    const malformedParking = { ...parking, id: 'bad-parking', arrivalRole: 'guest-arrival' as any };
+
+    expect(isVenueMapGuestArrivalPoint(legacy)).toBe(false);
+    expect(isVenueMapGuestArrivalPoint(exitOnly)).toBe(false);
+    expect(isVenueMapGuestArrivalPoint(arrival)).toBe(true);
+    expect(isVenueMapGuestArrivalPoint(both)).toBe(true);
+    expect(isVenueMapGuestArrivalPoint(parking)).toBe(true);
+    expect(isVenueMapGuestArrivalPoint(malformedParking)).toBe(false);
+    expect(preferredVenueMapDirectionsStart([malformedParking])).toBeUndefined();
+    expect(projectVenueMap({
+      ...emptyVenueMapConfig(),
+      points: [legacy],
+    }, 'guest').points[0].arrivalRole).toBe('unknown');
+  });
+
+  it('preserves invalid or misplaced arrival roles for explicit recovery', () => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'bad-entry', label: 'Bad entry', kind: 'entry' as const, x: 1, y: 1, arrivalRole: 'loading-dock' as any },
+        { id: 'bad-amenity', label: 'Bad amenity', kind: 'amenity' as const, x: 2, y: 2, arrivalRole: 'guest-arrival' as any },
+      ],
+    };
+
+    expect(venueMapPointArrivalRoleIssue(map.points[0])).toMatch(/invalid/i);
+    expect(venueMapPointArrivalRoleIssue(map.points[1])).toMatch(/Only Entry \/ Exit/i);
+    expect(venueMapArrivalRoleIntegrityIssues(map)).toEqual([
+      expect.objectContaining({ pointId: 'bad-entry', savedValue: 'loading-dock' }),
+      expect.objectContaining({ pointId: 'bad-amenity', savedValue: 'guest-arrival' }),
+    ]);
+    expect(projectVenueMap(map, 'guest').points).toEqual([]);
+  });
+
+  it('prefers entry, then parking, over arbitrary authoring order for directions', () => {
+    const destination = { id: 'garden', label: 'Garden', kind: 'space' as const, x: 20, y: 20 };
+    const parking = { id: 'parking', label: 'Guest Parking', kind: 'parking' as const, x: 5, y: 5 };
+    const entry = { id: 'entry', label: 'Main Gate', kind: 'entry' as const, x: 10, y: 10, arrivalRole: 'guest-arrival' as const };
+
+    expect(preferredVenueMapDirectionsStart([destination, parking, entry])?.id).toBe('entry');
+    expect(preferredVenueMapDirectionsStart([destination, parking])?.id).toBe('parking');
+    expect(preferredVenueMapDirectionsStart([destination])).toBeUndefined();
+    expect(preferredVenueMapDirectionsStart([])).toBeUndefined();
+
+    const routedMap = {
+      ...emptyVenueMapConfig(),
+      points: [destination, parking, entry],
+      routes: [{
+        id: 'parking-walk',
+        name: 'Parking walk',
+        pointIds: ['parking', 'garden'],
+        accessibility: 'step-free' as const,
+      }],
+    };
+    expect(preferredVenueMapDirectionsStart(routedMap.points, {
+      map: routedMap,
+      destinationPointId: 'garden',
+    })?.id).toBe('parking');
+    expect(preferredVenueMapDirectionsStart(routedMap.points, {
+      map: routedMap,
+      destinationPointId: 'garden',
+      stepFreeOnly: true,
+    })?.id).toBe('parking');
+  });
+
+  it('preflights guest arrival, routine-route, and verified step-free coverage by wedding scope', () => {
+    const venues: Venue[] = [
+      { id: 'garden', name: 'Ceremony Garden', category: 'outdoor', width: 100, height: 80, capacity: 120 },
+      { id: 'cottage', name: 'Cottage', category: 'lodging', width: 40, height: 30, capacity: 8 },
+    ];
+    const destination = {
+      id: 'garden-pin', label: 'Garden Pin', kind: 'space' as const, x: 40, y: 20, venueId: 'garden',
+    };
+    expect(venueMapGuestRouteCoverageIssues(emptyVenueMapConfig(), venues)).toEqual([
+      expect.objectContaining({
+        kind: 'missing-destination-pin',
+        venueId: 'garden',
+        venueName: 'Ceremony Garden',
+      }),
+    ]);
+
+    const baseMap = {
+      ...emptyVenueMapConfig(),
+      points: [destination],
+    };
+
+    expect(venueMapGuestRouteCoverageIssues(baseMap, venues)).toEqual([
+      expect.objectContaining({
+        kind: 'no-arrival-point',
+        pointId: 'garden-pin',
+        venueName: 'Ceremony Garden',
+      }),
+    ]);
+
+    const arrivalMap = {
+      ...baseMap,
+      points: [
+        { id: 'gate', label: 'Main Gate', kind: 'entry' as const, x: 5, y: 5, arrivalRole: 'guest-arrival' as const },
+        destination,
+      ],
+    };
+    expect(venueMapGuestRouteCoverageIssues(arrivalMap, venues)).toEqual([
+      expect.objectContaining({ kind: 'no-routine-route' }),
+    ]);
+
+    const unverifiedMap = {
+      ...arrivalMap,
+      routes: [{
+        id: 'garden-walk',
+        name: 'Garden Walk',
+        pointIds: ['gate', 'garden-pin'],
+        accessibility: 'unknown' as const,
+      }],
+    };
+    expect(venueMapGuestRouteCoverageIssues(unverifiedMap, venues)).toEqual([
+      expect.objectContaining({ kind: 'no-step-free-route' }),
+    ]);
+
+    const stepFreeMap = {
+      ...unverifiedMap,
+      routes: [{ ...unverifiedMap.routes[0], accessibility: 'step-free' as const }],
+    };
+    expect(venueMapGuestRouteCoverageIssues(stepFreeMap, venues)).toEqual([]);
+  });
+
+  it('ignores non-guest and lodging pins and does not borrow arrivals from another event scope', () => {
+    const venues: Venue[] = [
+      { id: 'garden', name: 'Garden', category: 'outdoor', width: 100, height: 80, capacity: 120 },
+      { id: 'ballroom', name: 'Ballroom', category: 'reception', width: 80, height: 60, capacity: 200 },
+      { id: 'cottage', name: 'Cottage', category: 'lodging', width: 40, height: 30, capacity: 8 },
+    ];
+    const map = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'other-gate', label: 'Ballroom Gate', kind: 'entry' as const, x: 5, y: 5, arrivalRole: 'guest-arrival' as const, eventSpaceIds: ['ballroom'] },
+        { id: 'garden', label: 'Garden', kind: 'space' as const, x: 30, y: 20, venueId: 'garden' },
+        { id: 'couple-room', label: 'Couple Room', kind: 'space' as const, x: 50, y: 20, venueId: 'ballroom', audience: 'couple' as const },
+        { id: 'cottage', label: 'Cottage', kind: 'space' as const, x: 70, y: 20, venueId: 'cottage' },
+      ],
+    };
+
+    expect(venueMapGuestRouteCoverageIssues(map, venues)).toEqual([
+      expect.objectContaining({ kind: 'no-arrival-point', pointId: 'garden' }),
+    ]);
+  });
+
+  it('keys displayed directions to the exact map, wedding scope, and routing catalog', () => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Gate', kind: 'entry' as const, x: 0, y: 0 },
+        { id: 'garden', label: 'Garden', kind: 'space' as const, venueId: 'garden', x: 10, y: 0 },
+      ],
+      routes: [{ id: 'arrival', name: 'Arrival', pointIds: ['gate', 'garden'], notes: 'Use the left fork.' }],
+    };
+    const venues = [{
+      id: 'garden', name: 'Garden', category: 'outdoor', width: 10, height: 10, capacity: 50,
+    }] as any;
+    const key = venueMapDirectionsContextKey(map, ['garden'], venues, true);
+
+    expect(venueMapDirectionsContextKey(map, ['garden', 'garden'], venues, true)).toBe(key);
+    expect(venueMapDirectionsContextKey(
+      { ...map, routes: [{ ...map.routes[0], notes: 'Use the right fork.' }] },
+      ['garden'],
+      venues,
+      true,
+    )).not.toBe(key);
+    expect(venueMapDirectionsContextKey(map, [], venues, true)).not.toBe(key);
+    expect(venueMapDirectionsContextKey(
+      map,
+      ['garden'],
+      [{ ...venues[0], category: 'ceremony' }],
+      true,
+    )).not.toBe(key);
+    expect(venueMapDirectionsContextKey(map, ['garden'], venues, false)).not.toBe(key);
   });
 
   it('uses venue priority before geometric distance and distance instead of authored segment count', () => {
@@ -754,6 +1536,29 @@ describe('venue map designer helpers', () => {
     expect(findVenueMapRoute(preferred, 'start', 'end')?.pointIds)
       .toEqual(['start', 'far', 'end']);
     expect(findVenueMapRoute(preferred, 'start', 'end')?.priority).toBe('preferred');
+  });
+
+  it('keeps venue priority ahead of distance after an unavoidable lower-tier connector', () => {
+    const map = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'start', label: 'Start', kind: 'entry' as const, x: 0, y: 0 },
+        { id: 'junction', label: 'Junction', kind: 'path' as const, x: 1, y: 0 },
+        { id: 'preferred-bend', label: 'Preferred bend', kind: 'path' as const, x: 5, y: 20 },
+        { id: 'end', label: 'End', kind: 'space' as const, x: 10, y: 0 },
+      ],
+      routes: [
+        { id: 'connector', name: 'Arrival connector', pointIds: ['start', 'junction'], priority: 'standard' as const },
+        { id: 'preferred-branch', name: 'Venue preferred', pointIds: ['junction', 'preferred-bend', 'end'], priority: 'preferred' as const },
+        { id: 'standard-shortcut', name: 'Standard shortcut', pointIds: ['junction', 'end'], priority: 'standard' as const },
+      ],
+    };
+
+    const path = findVenueMapRoute(map, 'start', 'end');
+    expect(path?.pointIds).toEqual(['start', 'junction', 'preferred-bend', 'end']);
+    expect(path?.routes.map((route) => route.id)).toEqual(['connector', 'preferred-branch']);
+    expect(path?.priority).toBe('standard');
+    expect(path!.distance).toBeGreaterThan(40);
   });
 
   it('excludes emergency-only paths from routine directions and validates identical endpoints', () => {

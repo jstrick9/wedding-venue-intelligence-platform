@@ -69,6 +69,24 @@ describe('ConfirmDialog', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
+  it('can focus the safe cancel action first in a destructive confirmation', () => {
+    render(
+      <ConfirmDialog
+        open
+        title="Discard changes?"
+        message="Unsaved changes will be lost."
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+        initialFocus="cancel"
+        tone="danger"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Keep editing' })).toHaveFocus();
+  });
+
   it('closes on Escape unless a resolution is in progress', () => {
     const onCancel = vi.fn();
     const { rerender } = render(

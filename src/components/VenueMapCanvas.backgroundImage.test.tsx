@@ -91,7 +91,15 @@ describe('VenueMapCanvas base-image availability', () => {
     fireEvent.click(action);
     expect(onPointClick).toHaveBeenCalledWith(expect.objectContaining({ id: 'gate' }));
 
-    fireEvent.click(screen.getByRole('button', { name: /Retry base map/i }));
+    const retryButton = screen.getByRole('button', { name: /Retry base map/i });
+    expect(retryButton).toHaveClass('no-print', 'spm-studio-chrome');
+    fireEvent.click(retryButton);
+    const preloader = await waitFor(() => {
+      const image = container.querySelector<HTMLImageElement>('[data-map-background-preloader="true"]');
+      expect(image).toHaveAttribute('src', 'https://signed.test/recovered.png');
+      return image!;
+    });
+    fireEvent.load(preloader);
     await waitFor(() => expect(container.querySelector('image')).toHaveAttribute(
       'href',
       'https://signed.test/recovered.png',
@@ -99,18 +107,39 @@ describe('VenueMapCanvas base-image availability', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('handles SVG decode failures and lets a server-unavailable map re-pull', async () => {
+  it('reports actual decode readiness, handles SVG failures, and lets an unavailable map re-pull', async () => {
     mocks.resolveImageRef.mockResolvedValue('https://signed.test/corrupt.png');
     const onRetry = vi.fn();
+    const onLoadStateChange = vi.fn();
     const { container, rerender } = render(
       <VenueMapCanvas
         map={mapWithImage('sp://venue-map-images/org/corrupt.png')}
         hideMapWhenBackgroundUnavailable
+        onBackgroundLoadStateChange={onLoadStateChange}
       />,
     );
+    await waitFor(() => expect(onLoadStateChange).toHaveBeenCalledWith({
+      source: 'sp://venue-map-images/org/corrupt.png',
+      state: 'loading',
+    }));
+    const preloader = await waitFor(() => {
+      const image = container.querySelector<HTMLImageElement>('[data-map-background-preloader="true"]');
+      expect(image).toHaveAttribute('src', 'https://signed.test/corrupt.png');
+      return image!;
+    });
+    expect(container.querySelector('svg')).not.toBeInTheDocument();
+    fireEvent.load(preloader);
+    await waitFor(() => expect(onLoadStateChange).toHaveBeenCalledWith({
+      source: 'sp://venue-map-images/org/corrupt.png',
+      state: 'ready',
+    }));
     await waitFor(() => expect(container.querySelector('image')).toBeInTheDocument());
     fireEvent.error(container.querySelector('image')!);
     expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(onLoadStateChange).toHaveBeenCalledWith({
+      source: 'sp://venue-map-images/org/corrupt.png',
+      state: 'error',
+    });
     expect(container.querySelector('svg')).not.toBeInTheDocument();
 
     rerender(
@@ -127,6 +156,30 @@ describe('VenueMapCanvas base-image availability', () => {
     expect(screen.getByText('Named map locations')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Retry base map/i }));
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('never places an unsafe source or an invalid source-opacity pair in SVG', () => {
+    const { container, rerender } = render(
+      <VenueMapCanvas
+        map={{
+          ...mapWithImage('javascript:alert(1)'),
+          backgroundOpacity: 0.8,
+        }}
+      />,
+    );
+    expect(container.querySelector('image')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/base map is temporarily unavailable/i);
+
+    rerender(
+      <VenueMapCanvas
+        map={{
+          ...mapWithImage('data:image/png;base64,abc'),
+          backgroundOpacity: 99,
+        }}
+      />,
+    );
+    expect(container.querySelector('image')).not.toBeInTheDocument();
+    expect(mocks.resolveImageRef).not.toHaveBeenCalled();
   });
 
   it('keeps vectors visible to an admin for recovery when fail-closed mode is off', () => {

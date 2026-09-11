@@ -27,6 +27,20 @@ export interface CoupleSnapshotBuildOverrides {
   venueMapConfig?: unknown;
 }
 
+/**
+ * Invitation-scoped cloud state is authoritative. An unhydrated remote value
+ * must fail closed to null rather than exposing a global browser cache that may
+ * belong to another venue or prior session. Browser fallback is local-mode only.
+ */
+export function resolveAuthoritativePortalVenueMap(
+  remoteMap: VenueMapConfig | null | undefined,
+  localMap: VenueMapConfig | null,
+  remoteAuthoritative: boolean,
+): VenueMapConfig | null {
+  if (remoteAuthoritative) return remoteMap ?? null;
+  return remoteMap !== undefined ? remoteMap : localMap;
+}
+
 const COUPLE_SCOPED_ARRAYS = new Set([
   'coupleAnswers',
   'coupleMessages',

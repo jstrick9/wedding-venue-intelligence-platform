@@ -14,6 +14,7 @@ export function useFocusTrap(
   containerRef: RefObject<HTMLElement | null>,
   active: boolean,
   onEscape?: () => void,
+  initialFocusRef?: RefObject<HTMLElement | null>,
 ) {
   const wasActiveRef = useRef(false);
   const previousActiveRef = useRef<HTMLElement | null>(null);
@@ -29,7 +30,11 @@ export function useFocusTrap(
         container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
       );
 
-      (focusable[0] || container).focus();
+      const requestedInitialFocus = initialFocusRef?.current;
+      const initialTarget = requestedInitialFocus && focusable.includes(requestedInitialFocus)
+        ? requestedInitialFocus
+        : focusable[0] || container;
+      initialTarget.focus();
       wasActiveRef.current = true;
     }
 
@@ -38,7 +43,7 @@ export function useFocusTrap(
       previousActiveRef.current = null;
       wasActiveRef.current = false;
     }
-  }, [active, containerRef]);
+  }, [active, containerRef, initialFocusRef]);
 
   // Handle tab trapping and escape while active
   useEffect(() => {

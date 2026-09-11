@@ -56,6 +56,7 @@ import { getCoupleEvents } from '../services/couples/coupleService';
 import { computeSpaceSeating } from '../utils/spaceSeating';
 import { emit, emitDataChanged, on, type UndoSnapshot } from '../utils/appEvents';
 import { VENUE_HOME_HASH, needsVenueHomeHashRewrite } from '../utils/venueHomeRoute';
+import { venueMapGuestRouteCoverageIssues } from '../utils/venueMapDesigner';
 import { useModals } from '../contexts/ModalContext';
 
 // ─── Lazy-loaded modal / portal components ───────────────────────────────────
@@ -92,6 +93,12 @@ export default function AuthenticatedApp() {
   const [view, setView] = useState<'dashboard' | 'studio' | 'admin' | 'venuemap'>('dashboard');
   const [venueMapDirty, setVenueMapDirty] = useState(false);
   const [venueMapConflict, setVenueMapConflict] = useState<VenueMapConflictState | null>(null);
+  const venueMapConflictCoverageIssues = useMemo(
+    () => venueMapConflict
+      ? venueMapGuestRouteCoverageIssues(venueMapConflict.localMap, layoutState.venues)
+      : [],
+    [layoutState.venues, venueMapConflict],
+  );
   const [resolvingVenueMapConflict, setResolvingVenueMapConflict] = useState(false);
   const [venueMapEditorKey, setVenueMapEditorKey] = useState(0);
   // An accepted server write remains authoritative even when browser storage is
@@ -1097,12 +1104,12 @@ export default function AuthenticatedApp() {
                 }
                 return outcome;
               }}
-              onConflictDraftChange={(latestDraft, hasUnappliedEdits) => {
+              onConflictDraftChange={(latestDraft, publicationBlocked) => {
                 setVenueMapConflict((conflict) => conflict
                   ? {
                       ...conflict,
                       localMap: latestDraft,
-                      overwriteBlocked: hasUnappliedEdits,
+                      overwriteBlocked: publicationBlocked,
                     }
                   : conflict);
               }}
@@ -1118,6 +1125,9 @@ export default function AuthenticatedApp() {
           title="Discard unsaved map changes?"
           message="You have unsaved changes to the venue map. Leaving will discard them. Save the map first to keep your work."
           confirmLabel="Leave anyway"
+          cancelLabel="Keep editing"
+          initialFocus="cancel"
+          tone="danger"
           onConfirm={() => {
             const destination = pendingVenueMapHash || '#/studio';
             setConfirmVenueMapLeave(false);
@@ -1136,12 +1146,17 @@ export default function AuthenticatedApp() {
         <ConfirmDialog
           open={venueMapConflict !== null}
           title="Venue map changed elsewhere"
-          message={venueMapConflict?.overwriteBlocked
-            ? 'Another administrator saved this map while you were working, and you also have unapplied edits. Keep your draft, then apply or cancel those edits and save again before choosing an explicit overwrite. Reloading will discard the entire local draft.'
-            : 'Another tab or venue administrator saved this map after you opened it. Your latest draft is still here and has not replaced their work. Keep editing, reload the shared map, or explicitly overwrite it with your draft.'}
+          message={`${venueMapConflict?.overwriteBlocked
+            ? 'Another administrator saved this map while you were working, and the retained draft still has unapplied edits or required publication repairs. Keep your draft, resolve the items shown in the designer, and save again before choosing an explicit overwrite. Reloading will discard the entire local draft.'
+            : 'Another tab or venue administrator saved this map after you opened it. Your latest draft is still here and has not replaced their work. Keep editing, reload the shared map, or explicitly overwrite it with your draft.'}${venueMapConflictCoverageIssues.length > 0
+            ? ` The exact retained draft has ${venueMapConflictCoverageIssues.length} known guest map or wayfinding ${venueMapConflictCoverageIssues.length === 1 ? 'gap' : 'gaps'}: ${venueMapConflictCoverageIssues.slice(0, 3).map((issue) => `${issue.pointLabel}: ${issue.message}`).join(' ')}${venueMapConflictCoverageIssues.length > 3 ? ` Plus ${venueMapConflictCoverageIssues.length - 3} more shown in the designer’s coverage report.` : ''} Overwriting will not create missing pins or routes, or claim step-free access.`
+            : ''}`}
           cancelLabel="Keep my draft"
           alternateLabel="Reload shared map"
-          confirmLabel="Overwrite shared map"
+          confirmLabel={venueMapConflictCoverageIssues.length > 0
+            ? 'Overwrite with known gaps'
+            : 'Overwrite shared map'}
+          initialFocus="cancel"
           tone="danger"
           busy={resolvingVenueMapConflict}
           confirmDisabled={venueMapConflict?.overwriteBlocked ?? true}

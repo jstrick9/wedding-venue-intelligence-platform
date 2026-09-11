@@ -1294,6 +1294,8 @@ export type VenueMapPointKind = 'space' | 'parking' | 'entry' | 'amenity' | 'pat
 /** Publication audience for venue-map objects. Legacy objects default to public. */
 export type VenueMapAudience = 'public' | 'couple' | 'staff';
 export type VenueMapViewer = 'guest' | 'couple' | 'staff';
+/** Whether an Entry / Exit pin is appropriate as a normal guest arrival. */
+export type VenueMapArrivalRole = 'unknown' | 'guest-arrival' | 'exit-only' | 'both';
 export type VenueMapRouteAccessibility = 'unknown' | 'step-free' | 'not-step-free';
 /** Venue-authored routing rank. Emergency-only routes are excluded from routine directions. */
 export type VenueMapRoutePriority = 'preferred' | 'standard' | 'secondary' | 'emergency-only';
@@ -1310,6 +1312,8 @@ export interface VenueMapPoint {
   audience?: VenueMapAudience;
   /** Wedding event-space ids this point applies to; absent/empty means all events. */
   eventSpaceIds?: string[];
+  /** Entry / Exit classification. Omitted legacy values are treated as unclassified. */
+  arrivalRole?: VenueMapArrivalRole;
   /** When kind === 'space', the venue id this point represents. */
   venueId?: string;
   /** Optional real-world GPS coordinates for "Open in Maps". */

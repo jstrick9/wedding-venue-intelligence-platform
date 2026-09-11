@@ -13,6 +13,8 @@ interface ConfirmDialogProps {
   busy?: boolean;
   /** Disable only the destructive/primary action while leaving safer exits available. */
   confirmDisabled?: boolean;
+  /** Choose the initially focused action; destructive dialogs can default to cancel. */
+  initialFocus?: 'confirm' | 'cancel';
   onConfirm: () => void;
   onAlternate?: () => void;
   onCancel: () => void;
@@ -21,7 +23,7 @@ interface ConfirmDialogProps {
 /**
  * Accessible, non-blocking confirmation dialog used in place of the native
  * window.confirm() for a consistent, on-brand delete/confirm experience.
- * Focus is trapped and the confirm button is focused on open.
+ * Focus is trapped and the configured initial action is focused on open.
  */
 export function ConfirmDialog({
   open,
@@ -33,21 +35,27 @@ export function ConfirmDialog({
   tone = 'default',
   busy = false,
   confirmDisabled = false,
+  initialFocus = 'confirm',
   onConfirm,
   onAlternate,
   onCancel,
 }: ConfirmDialogProps) {
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // Confirm dialogs sit above another modal, so they need their own focus trap
   // and Escape handler. This also restores focus to the triggering control when
   // the confirmation closes.
-  useFocusTrap(dialogRef, open);
+  useFocusTrap(
+    dialogRef,
+    open,
+    undefined,
+    initialFocus === 'cancel' ? cancelRef : confirmRef,
+  );
 
   useEffect(() => {
     if (!open) return;
-    confirmRef.current?.focus();
     openConfirmDialog();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busy) {
@@ -97,6 +105,7 @@ export function ConfirmDialog({
         <div className={`mt-6 flex gap-3 ${alternateLabel ? 'flex-col' : ''}`}>
           <button
             type="button"
+            ref={cancelRef}
             onClick={onCancel}
             disabled={busy}
             className="flex-1 px-4 py-2.5 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-wait disabled:opacity-50"

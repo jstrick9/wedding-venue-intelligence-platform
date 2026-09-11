@@ -275,7 +275,7 @@ describe('backup import', () => {
     expect(getVenueMapStructuralRecoveryArtifacts(getVenueMapConfig())).toEqual([
       expect.objectContaining({
         family: 'point',
-        candidate: expect.objectContaining({ id: 'outside', x: 500, y: 400 }),
+        candidate: expect.objectContaining({ id: 'outside', x: 600, y: 450 }),
       }),
     ]);
   });

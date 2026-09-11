@@ -7,19 +7,22 @@ import { useFocusTrap } from './useFocusTrap';
 function FocusTrapHarness({
   active = true,
   onEscape,
+  preferSecond = false,
 }: {
   active?: boolean;
   onEscape?: () => void;
+  preferSecond?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  useFocusTrap(ref, active, onEscape);
+  const secondRef = useRef<HTMLButtonElement>(null);
+  useFocusTrap(ref, active, onEscape, preferSecond ? secondRef : undefined);
 
   return (
     <div>
       <button type="button">Outside Button</button>
       <div ref={ref} tabIndex={-1}>
         <button type="button">First Button</button>
-        <button type="button">Second Button</button>
+        <button ref={secondRef} type="button">Second Button</button>
       </div>
     </div>
   );
@@ -54,6 +57,12 @@ describe('useFocusTrap', () => {
     render(<FocusTrapHarness />);
 
     expect(await screen.findByRole('button', { name: 'First Button' })).toHaveFocus();
+  });
+
+  it('focuses an explicit safe initial target when provided', async () => {
+    render(<FocusTrapHarness preferSecond />);
+
+    expect(await screen.findByRole('button', { name: 'Second Button' })).toHaveFocus();
   });
 
   it('cycles focus forward with Tab', async () => {

@@ -95,6 +95,7 @@ import {
   isCoupleCloudEnabled,
   isPortalAccessError,
   pullCouplePortalSnapshot,
+  resolveAuthoritativePortalVenueMap,
   saveCouplePortalSnapshot,
 } from '../services/couples/coupleCloudSync';
 import { EventQuestionsWizard } from './EventQuestionsWizard';
@@ -103,7 +104,12 @@ import { createSecretRecord } from '../utils/auth';
 import { sendCoupleEmail } from '../services/couples/coupleEmailService';
 import { CoupleLayoutEditor } from './CoupleLayoutEditor';
 import { VenueMapCanvas } from './VenueMapCanvas';
-import { projectVenueMap, rainContingencyValidationIssue } from '../utils/venueMapDesigner';
+import { VenueMapRainPlanGuidance } from './VenueMapRainPlanGuidance';
+import {
+  hasRenderableVenueMapContent,
+  projectVenueMap,
+  rainContingencyValidationIssue,
+} from '../utils/venueMapDesigner';
 import { LodgingAssignmentsModal } from './LodgingAssignmentsModal';
 import { normalizeEmail, normalizeUsPhone } from '../utils/contactQuality';
 import { PortalInviteAccountSetup } from './PortalInviteAccountSetup';
@@ -269,9 +275,6 @@ function CouplesPortalSession({ coupleToken, venueSlug, onExitPortal }: CouplesP
   // pulled snapshot; the server refuses a save with 'conflict' when the row
   // moved in between (e.g. a guest submitted after our pull).
   const cloudSyncedAtRef = useRef<string | undefined>(undefined);
-  const activeVenueMap = remoteVenueMap !== undefined
-    ? remoteVenueMap
-    : getVenueMapConfigForPortal();
   const activeVenueRules = useMemo(() => (
     remoteVenueCatalog === undefined
       ? getVenueRules()
@@ -355,6 +358,12 @@ function CouplesPortalSession({ coupleToken, venueSlug, onExitPortal }: CouplesP
   // retain token-only compatibility. Local services remain the immediate UI
   // cache while polling keeps another device's edits visible.
   const cloudToken = accountInviteToken || event?.inviteToken || '';
+  const cloudVenueMapAuthoritative = isCoupleCloudEnabled() && Boolean(cloudToken);
+  const activeVenueMap = resolveAuthoritativePortalVenueMap(
+    remoteVenueMap,
+    cloudVenueMapAuthoritative ? null : getVenueMapConfigForPortal(),
+    cloudVenueMapAuthoritative,
+  );
   useEffect(() => {
     if (cloudAccountInvite && portalAccountAccess === 'pending') return;
     if (!isCoupleCloudEnabled() || !cloudToken) return;
@@ -2213,7 +2222,7 @@ function CouplesPortalSession({ coupleToken, venueSlug, onExitPortal }: CouplesP
                     venues: isCoupleCloudEnabled() ? undefined : venues,
                   },
                 );
-                if (coupleMap.points.length === 0) return null;
+                if (!hasRenderableVenueMapContent(coupleMap)) return null;
                 const canOpenMapPoint = (point: VenueMapPoint) =>
                   !cloudReadOnlyFallback
                   && point.kind === 'space'
@@ -2248,7 +2257,9 @@ function CouplesPortalSession({ coupleToken, venueSlug, onExitPortal }: CouplesP
                     <p className="text-[11px] text-gray-400 mt-1">
                       {cloudReadOnlyFallback
                         ? 'Space layouts and lodging assignments are view-only while browser persistence is unavailable.'
-                        : 'Tap a pin—or use the Map location actions list—to open a space layout or lodging assignment.'}
+                        : coupleMap.points.some(canOpenMapPoint)
+                          ? 'Tap a pin—or use the Map location actions list—to open a space layout or lodging assignment.'
+                          : 'Venue-authored property map. Interactive space pins have not been added yet.'}
                     </p>
                   </div>
                 );
@@ -2317,11 +2328,12 @@ function CouplesPortalSession({ coupleToken, venueSlug, onExitPortal }: CouplesP
                             isCoupleCloudEnabled()
                             || rainContingencyValidationIssue(backup, venues) === null
                           )) {
-                            const backupVenue = venues.find((v) => v.id === backup.indoorVenueId);
                             return (
-                              <div className="mt-2 text-[11px] text-blue-700 bg-blue-50 rounded px-2 py-1 font-medium">
-                                🌧️ Rain backup: {backupVenue?.name || backup.indoorVenueId}
-                              </div>
+                              <VenueMapRainPlanGuidance
+                                rainContingencies={[backup]}
+                                venues={venues}
+                                compact
+                              />
                             );
                           }
                           // Warn when an outdoor space is selected but has no venue-configured backup.

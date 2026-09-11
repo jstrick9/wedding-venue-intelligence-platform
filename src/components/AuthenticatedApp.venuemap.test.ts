@@ -51,12 +51,31 @@ describe('AuthenticatedApp full-venue map module route', () => {
     expect(source).toContain('Reload shared map');
     expect(source).toContain('Overwrite shared map');
     expect(source).toContain('cacheVenueMapConfigFromServer');
-    expect(source).toContain('onConflictDraftChange={(latestDraft, hasUnappliedEdits) =>');
+    expect(source).toContain('onConflictDraftChange={(latestDraft, publicationBlocked) =>');
     expect(source).toContain('localMap: latestDraft');
-    expect(source).toContain('overwriteBlocked: hasUnappliedEdits');
+    expect(source).toContain('overwriteBlocked: publicationBlocked');
     expect(source).toContain('setVenueMapConflict({ ...conflict, overwriteBlocked: true })');
     expect(source).toContain('confirmDisabled={venueMapConflict?.overwriteBlocked ?? true}');
     expect(source).toContain('if (!venueMapConflict || venueMapConflict.overwriteBlocked) return;');
+    expect(source).toContain('overwriteBlocked: publicationBlocked');
+  });
+
+  it('recomputes and discloses route-coverage gaps for the exact CAS overwrite payload', () => {
+    const source = readFileSync(APP_PATH, 'utf8');
+    expect(source).toContain('venueMapGuestRouteCoverageIssues(venueMapConflict.localMap, layoutState.venues)');
+    expect(source).toContain('The exact retained draft has');
+    expect(source).toContain('Overwrite with known gaps');
+    expect(source).toContain('Overwriting will not create missing pins or routes, or claim step-free access.');
+  });
+
+  it('defaults destructive venue-map decisions to keeping the local draft', () => {
+    const source = readFileSync(APP_PATH, 'utf8');
+    expect(source).toMatch(
+      /title="Discard unsaved map changes\?"[\s\S]{0,500}?cancelLabel="Keep editing"[\s\S]{0,100}?initialFocus="cancel"[\s\S]{0,100}?tone="danger"/,
+    );
+    expect(source).toMatch(
+      /title="Venue map changed elsewhere"[\s\S]{0,3500}?cancelLabel="Keep my draft"[\s\S]{0,600}?initialFocus="cancel"[\s\S]{0,100}?tone="danger"/,
+    );
   });
 
   it('remounts accepted saves from a tenant-scoped in-memory seed if cache storage fails', () => {

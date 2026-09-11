@@ -13,8 +13,8 @@ import { saveVenueMapConfig } from '../services/wayfinding/venueWayfindingServic
 
 vi.mock('../hooks/useLayoutState', () => ({
   getVenues: () => [
-    { id: 'ceremony', name: 'Ceremony Garden', width: 60, height: 40, capacity: 100 },
-    { id: 'reception', name: 'Reception Hall', width: 80, height: 60, capacity: 200 },
+    { id: 'ceremony', name: 'Ceremony Garden', category: 'outdoor', environment: 'outdoor', width: 60, height: 40, capacity: 100 },
+    { id: 'reception', name: 'Reception Hall', category: 'reception', environment: 'indoor', width: 80, height: 60, capacity: 200 },
   ],
 }));
 
@@ -70,6 +70,60 @@ describe('CouplesPortal', () => {
     expect(screen.getAllByText(/Private Planning Suite/).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: /Private Planning Suite/ })).toBeNull();
     expect(screen.queryByText(/Service Yard/)).toBeNull();
+  });
+
+  it('shows venue-authored rain-plan guidance with the couple backup', () => {
+    saveVenueMapConfig({
+      width: 100,
+      height: 80,
+      points: [],
+      routes: [],
+      drawings: [],
+      rainContingencies: [{
+        id: 'rain-ceremony',
+        outdoorVenueId: 'ceremony',
+        indoorVenueId: 'reception',
+        note: 'Use the covered east walkway and enter beside the coat room.',
+      }],
+      updatedAt: new Date().toISOString(),
+    });
+
+    setupSession('Rain & Shine', { availableSpaces: ['ceremony', 'reception'] });
+    render(<CouplesPortal onExitPortal={() => {}} />);
+    fireEvent.click(screen.getByText('Venue Spaces'));
+
+    expect(screen.getByText('Ceremony Garden → Reception Hall')).toBeInTheDocument();
+    expect(screen.getByText(/Use the covered east walkway/i)).toBeInTheDocument();
+  });
+
+  it('shows a published shape-only venue map before interactive pins are added', () => {
+    saveVenueMapConfig({
+      width: 100,
+      height: 80,
+      points: [],
+      routes: [],
+      drawings: [{
+        id: 'garden-zone',
+        type: 'zone',
+        x: 10,
+        y: 10,
+        width: 40,
+        height: 25,
+        text: 'Ceremony lawn',
+        audience: 'public',
+      }],
+      rainContingencies: [],
+      updatedAt: new Date().toISOString(),
+    });
+
+    setupSession('Map First', { availableSpaces: ['ceremony'] });
+    render(<CouplesPortal onExitPortal={() => {}} />);
+    fireEvent.click(screen.getByText('Venue Spaces'));
+
+    expect(screen.getByRole('heading', { name: /Venue map/ })).toBeInTheDocument();
+    expect(screen.getAllByText('Ceremony lawn').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Interactive space pins have not been added yet/i))
+      .toBeInTheDocument();
   });
 
   it('shows invalid invite state for a bad token', () => {

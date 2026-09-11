@@ -135,7 +135,7 @@ describe('backup export', () => {
     expect(bundle.payload.venueMapStructuralRecovery).toEqual(expect.objectContaining({
       artifacts: [expect.objectContaining({
         family: 'point',
-        candidate: expect.objectContaining({ id: 'outside', x: 100, y: 20 }),
+        candidate: expect.objectContaining({ id: 'outside', x: 120, y: 20 }),
       })],
     }));
   });

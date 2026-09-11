@@ -132,6 +132,222 @@ describe('entityRepository (supabase)', () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 
+  it('blocks generic capture and direct saves with incompatible walkway delivery', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Gate', kind: 'entry' as const, x: 5, y: 5 },
+        { id: 'service', label: 'Service turn', kind: 'path' as const, x: 20, y: 20, audience: 'staff' as const },
+      ],
+      routes: [{
+        id: 'guest-route',
+        name: 'Guest route',
+        audience: 'public' as const,
+        pointIds: ['gate', 'service'],
+      }],
+    };
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/audience or event scope/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/audience or event scope/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct saves with stale point-kind metadata', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      points: [{
+        id: 'former-space',
+        label: 'Parking',
+        kind: 'parking' as const,
+        x: 5,
+        y: 5,
+        venueId: 'garden',
+      }],
+    };
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/current point kind/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/current point kind/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct saves before authored map text can be truncated', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      points: [{
+        id: 'east-ramp',
+        label: 'East ramp',
+        description: 'x'.repeat(1001),
+        kind: 'entry' as const,
+        x: 5,
+        y: 5,
+      }],
+    };
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/text must be repaired/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/text must be repaired/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct saves before malformed mobility status can be rewritten', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Gate', kind: 'entry' as const, x: 5, y: 5 },
+        { id: 'garden', label: 'Garden', kind: 'amenity' as const, x: 10, y: 10 },
+      ],
+      routes: [{
+        id: 'garden-ramp',
+        name: 'Garden ramp',
+        pointIds: ['gate', 'garden'],
+        accessibility: 'stepfree',
+        priority: 'standard' as const,
+      }],
+    } as any;
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/Invalid walkway mobility status/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/Invalid walkway mobility status/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct saves for zero-length walkways before RPC', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'gate', label: 'Gate', kind: 'entry' as const, x: 5, y: 5 },
+        { id: 'garden', label: 'Garden', kind: 'amenity' as const, x: 5, y: 5 },
+      ],
+      routes: [{
+        id: 'invisible-ramp',
+        name: 'Invisible ramp',
+        pointIds: ['gate', 'garden'],
+        accessibility: 'step-free' as const,
+        priority: 'preferred' as const,
+      }],
+    };
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/at least two different map positions/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/at least two different map positions/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct saves before malformed visibility can be rewritten', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      points: [{
+        id: 'private-gate',
+        label: 'Private gate',
+        kind: 'entry' as const,
+        x: 5,
+        y: 5,
+        audience: 'vip',
+      }],
+    } as any;
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/Invalid point, walkway, or shape visibility/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/Invalid point, walkway, or shape visibility/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct saves before a partial GPS pair can be erased', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      points: [{
+        id: 'east-ramp',
+        label: 'East ramp',
+        kind: 'entry' as const,
+        x: 5,
+        y: 5,
+        lat: 35.22,
+      }],
+    };
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/Invalid, partial, or out-of-range GPS/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/Invalid, partial, or out-of-range GPS/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct saves before malformed identifiers can be rewritten', async () => {
+    const repo = new SupabaseEntityRepository();
+    const overlongId = `point-${'x'.repeat(200)}`;
+    const payload = {
+      ...emptyVenueMapConfig(),
+      points: [{
+        id: overlongId,
+        label: 'East ramp',
+        kind: 'entry' as const,
+        x: 5,
+        y: 5,
+      }],
+    };
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/identifiers must be explicitly repaired/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/identifiers must be explicitly repaired/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it('blocks generic capture and direct canonical saves with an explicit invalid map frame', async () => {
     const repo = new SupabaseEntityRepository();
     const payload = {
@@ -192,6 +408,180 @@ describe('entityRepository (supabase)', () => {
       payload,
       null,
     )).rejects.toThrow(/out-of-frame map-point coordinates/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct canonical saves with out-of-frame shapes', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      drawings: [{
+        id: 'clipped-zone',
+        type: 'zone',
+        x: 90,
+        y: 10,
+        width: 20,
+        height: 10,
+      }],
+    };
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/out-of-frame geometry/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/out-of-frame geometry/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct saves before shape rotation can be clamped', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      drawings: [{
+        id: 'turned-zone',
+        type: 'rectangle',
+        x: 40,
+        y: 30,
+        width: 20,
+        height: 10,
+        rotation: 450,
+      }],
+    };
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/geometry, rotation, or appearance/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/geometry, rotation, or appearance/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks malformed base configuration and unmanaged cloud image references before RPC', async () => {
+    const repo = new SupabaseEntityRepository();
+    const malformed = {
+      ...emptyVenueMapConfig(),
+      backgroundImageUrl: 'javascript:alert(1)',
+      backgroundOpacity: 99,
+    } as any;
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(malformed));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/Invalid base-map source or opacity/i);
+    await expect(repo.saveVenueMap(
+      { organizationId: '00000000-0000-4000-8000-000000000001', userId: 'u1' },
+      malformed,
+      null,
+    )).rejects.toThrow(/Invalid base-map source or opacity/i);
+
+    const unmanaged = {
+      ...emptyVenueMapConfig(),
+      backgroundImageUrl: 'https://example.com/map.png',
+      backgroundOpacity: 0.8,
+    };
+    await expect(repo.saveVenueMap(
+      { organizationId: '00000000-0000-4000-8000-000000000001', userId: 'u1' },
+      unmanaged,
+      null,
+    )).rejects.toThrow(/managed venue-map storage/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks duplicate-linked venue destination pins before generic or direct cloud writes', async () => {
+    const repo = new SupabaseEntityRepository();
+    const duplicateLinkedMap = {
+      ...emptyVenueMapConfig(),
+      points: [
+        { id: 'space-a', label: 'Garden A', kind: 'space', venueId: 'garden', x: 10, y: 10 },
+        { id: 'space-b', label: 'Garden B', kind: 'space', venueId: 'garden', x: 20, y: 20 },
+      ],
+    } as any;
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(duplicateLinkedMap));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/only one canonical map pin/i);
+    await expect(repo.saveVenueMap(
+      { organizationId: '00000000-0000-4000-8000-000000000001', userId: 'u1' },
+      duplicateLinkedMap,
+      null,
+    )).rejects.toThrow(/only one canonical map pin/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks malformed or misplaced arrival roles before generic or direct cloud writes', async () => {
+    const repo = new SupabaseEntityRepository();
+    const malformedRoleMap = {
+      ...emptyVenueMapConfig(),
+      points: [{
+        id: 'legacy-gate',
+        label: 'Legacy Gate',
+        kind: 'entry',
+        arrivalRole: 'loading-dock',
+        x: 10,
+        y: 10,
+      }],
+    } as any;
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(malformedRoleMap));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/Invalid or misplaced Entry \/ Exit arrival roles/i);
+    await expect(repo.saveVenueMap(
+      { organizationId: '00000000-0000-4000-8000-000000000001', userId: 'u1' },
+      malformedRoleMap,
+      null,
+    )).rejects.toThrow(/Invalid or misplaced Entry \/ Exit arrival roles/i);
+
+    const misplacedRoleMap = {
+      ...emptyVenueMapConfig(),
+      points: [{
+        id: 'parking',
+        label: 'Guest Parking',
+        kind: 'parking',
+        arrivalRole: 'guest-arrival',
+        x: 10,
+        y: 10,
+      }],
+    } as any;
+    await expect(repo.saveVenueMap(
+      { organizationId: '00000000-0000-4000-8000-000000000001', userId: 'u1' },
+      misplacedRoleMap,
+      null,
+    )).rejects.toThrow(/Invalid or misplaced Entry \/ Exit arrival roles/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic capture and direct saves before malformed shape appearance can be rewritten', async () => {
+    const repo = new SupabaseEntityRepository();
+    const payload = {
+      ...emptyVenueMapConfig(),
+      drawings: [{
+        id: 'hidden-zone',
+        type: 'zone',
+        x: 10,
+        y: 10,
+        width: 20,
+        height: 10,
+        fillColor: 'url(https://tracker.example/pixel)',
+        opacity: -1,
+      }],
+    } as any;
+
+    localStorage.setItem('test_venueMapConfigs', JSON.stringify(payload));
+    expect(() => captureEntityDomainPayload('venueMapConfigs'))
+      .toThrow(/geometry, rotation, or appearance/i);
+
+    await expect(repo.saveVenueMap(
+      { organizationId: 'org1', userId: 'u1' },
+      payload,
+      null,
+    )).rejects.toThrow(/geometry, rotation, or appearance/i);
     expect(rpc).not.toHaveBeenCalled();
   });
 

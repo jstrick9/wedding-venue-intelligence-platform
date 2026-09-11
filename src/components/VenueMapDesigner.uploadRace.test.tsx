@@ -29,7 +29,7 @@ describe('VenueMapDesigner base-map upload races', () => {
     const onSave = vi.fn();
     const onDirtyChange = vi.fn();
 
-    render(
+    const { container } = render(
       <VenueMapDesigner
         map={emptyVenueMapConfig()}
         venues={[]}
@@ -58,7 +58,9 @@ describe('VenueMapDesigner base-map upload races', () => {
     });
 
     await waitFor(() => expect(screen.queryByText('Uploading…')).not.toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'Apply point changes' }));
+    fireEvent.load(container.querySelector('image')!);
+    // Point fields and placement already belong to the local working draft;
+    // no secondary Apply/Done transaction is required before publication.
     fireEvent.click(screen.getByRole('button', { name: /Save & publish Venue Map/i }));
 
     expect(onSave).toHaveBeenCalledTimes(1);

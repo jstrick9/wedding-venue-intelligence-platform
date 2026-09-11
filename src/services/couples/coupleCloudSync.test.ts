@@ -15,11 +15,23 @@ import {
   affectsCouplePortalSnapshots,
   hydrateCouplePortalSnapshot,
   isCoupleCloudEnabled,
+  resolveAuthoritativePortalVenueMap,
 } from './coupleCloudSync';
 
 describe('couple cloud snapshot seam', () => {
   beforeEach(() => {
     localStorage.clear();
+  });
+
+  it('never uses a global browser map while invitation-scoped cloud state is authoritative', () => {
+    const cached = { ...emptyVenueMapConfig(), updatedAt: 'cached-other-venue' };
+    const remote = { ...emptyVenueMapConfig(), updatedAt: 'invite-scoped' };
+
+    expect(resolveAuthoritativePortalVenueMap(undefined, cached, true)).toBeNull();
+    expect(resolveAuthoritativePortalVenueMap(null, cached, true)).toBeNull();
+    expect(resolveAuthoritativePortalVenueMap(remote, cached, true)).toBe(remote);
+    expect(resolveAuthoritativePortalVenueMap(undefined, cached, false)).toBe(cached);
+    expect(resolveAuthoritativePortalVenueMap(null, cached, false)).toBeNull();
   });
 
   it('builds a snapshot scoped to one couple event', async () => {
@@ -200,6 +212,36 @@ describe('couple cloud snapshot seam', () => {
       const map = snapshot?.[key] as { points: Array<{ id: string }>; routes: unknown[] };
       expect(map.points.map((point) => point.id)).toEqual(['inside']);
       expect(map.routes).toEqual([]);
+    }
+  });
+
+  it('preserves classified arrival roles and quarantines malformed role paths in portal snapshots', async () => {
+    const event = createCoupleEvent({ coupleName: 'Arrival Role Couple', eventDate: '2027-05-01' });
+    const snapshot = await buildCouplePortalSnapshot(event.id, {
+      venueMapConfig: {
+        ...emptyVenueMapConfig(),
+        points: [
+          { id: 'arrival', label: 'Main Gate', kind: 'entry', arrivalRole: 'both', x: 5, y: 5 },
+          { id: 'malformed', label: 'Unknown Gate', kind: 'entry', arrivalRole: 'loading-dock', x: 20, y: 20 },
+          { id: 'parking', label: 'Parking', kind: 'parking', x: 50, y: 40 },
+        ],
+        routes: [
+          { id: 'valid', name: 'Main walk', pointIds: ['arrival', 'parking'] },
+          { id: 'dependent', name: 'Unknown walk', pointIds: ['malformed', 'parking'] },
+        ],
+      } as any,
+    });
+
+    for (const key of ['venueMapConfigs', 'guestVenueMap'] as const) {
+      const map = snapshot?.[key] as {
+        points: Array<{ id: string; arrivalRole?: string }>;
+        routes: Array<{ id: string }>;
+      };
+      expect(map.points).toEqual([
+        expect.objectContaining({ id: 'arrival', arrivalRole: 'both' }),
+        expect.objectContaining({ id: 'parking' }),
+      ]);
+      expect(map.routes).toEqual([expect.objectContaining({ id: 'valid' })]);
     }
   });
 

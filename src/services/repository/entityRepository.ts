@@ -2,12 +2,25 @@ import { getPlatformProvider, type PlatformProvider } from '../platform';
 import { getSupabaseClient, isSupabaseConfigured } from '../backend/supabaseClient';
 import { BACKUP_DOMAINS } from '../../utils/backupDomains';
 import { emitDataChanged, type DataChangedType } from '../../utils/appEvents';
+import { isManagedVenueMapImageRef } from '../../utils/venueMapImageRef';
 import {
+  assertVenueMapArrivalRolesResolved,
+  assertVenueMapAudiencesResolved,
+  assertVenueMapBaseImageResolved,
   assertVenueMapComplexityWithinBudget,
+  assertVenueMapDrawingGeometryResolved,
   assertVenueMapFrameValid,
+  assertVenueMapIdentifiersValid,
   assertVenueMapPointCoordinatesResolved,
+  assertVenueMapPointGpsResolved,
+  assertVenueMapPointKindFieldsCanonical,
+  assertVenueMapRouteAccessibilityResolved,
+  assertVenueMapRouteDeliveryCompatible,
+  assertVenueMapRouteGeometryResolved,
   assertVenueMapRoutePrioritiesResolved,
+  assertVenueMapSpacePointLinksUnique,
   assertVenueMapStructuralRecoveryResolved,
+  assertVenueMapTextFieldsValid,
 } from '../wayfinding/venueWayfindingService';
 
 /**
@@ -101,7 +114,19 @@ export function captureEntityDomainPayload(domain: EntityDomain): CapturedEntity
     assertVenueMapComplexityWithinBudget(payload);
     assertVenueMapFrameValid(payload);
     assertVenueMapPointCoordinatesResolved(payload);
+    assertVenueMapPointGpsResolved(payload);
+    assertVenueMapAudiencesResolved(payload);
+    assertVenueMapArrivalRolesResolved(payload);
+    assertVenueMapBaseImageResolved(payload);
+    assertVenueMapRouteAccessibilityResolved(payload);
+    assertVenueMapRouteGeometryResolved(payload);
+    assertVenueMapPointKindFieldsCanonical(payload);
+    assertVenueMapSpacePointLinksUnique(payload);
+    assertVenueMapIdentifiersValid(payload);
+    assertVenueMapTextFieldsValid(payload);
+    assertVenueMapDrawingGeometryResolved(payload);
     assertVenueMapRoutePrioritiesResolved(payload);
+    assertVenueMapRouteDeliveryCompatible(payload);
   }
   return { found: true, payload };
 }
@@ -203,7 +228,28 @@ export class SupabaseEntityRepository implements EntityRepository {
     assertVenueMapComplexityWithinBudget(payload);
     assertVenueMapFrameValid(payload);
     assertVenueMapPointCoordinatesResolved(payload);
+    assertVenueMapPointGpsResolved(payload);
+    assertVenueMapAudiencesResolved(payload);
+    assertVenueMapArrivalRolesResolved(payload);
+    assertVenueMapBaseImageResolved(payload);
+    assertVenueMapRouteAccessibilityResolved(payload);
+    assertVenueMapRouteGeometryResolved(payload);
+    assertVenueMapPointKindFieldsCanonical(payload);
+    assertVenueMapSpacePointLinksUnique(payload);
+    assertVenueMapIdentifiersValid(payload);
+    assertVenueMapTextFieldsValid(payload);
+    assertVenueMapDrawingGeometryResolved(payload);
     assertVenueMapRoutePrioritiesResolved(payload);
+    assertVenueMapRouteDeliveryCompatible(payload);
+    const backgroundImageUrl = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as { backgroundImageUrl?: unknown }).backgroundImageUrl
+      : undefined;
+    if (
+      backgroundImageUrl !== undefined
+      && !isManagedVenueMapImageRef(backgroundImageUrl, context.organizationId)
+    ) {
+      throw new Error('Cloud Venue Maps must use an image in this organization’s managed venue-map storage.');
+    }
     if (!isSupabaseConfigured()) throw new Error('This service is temporarily unavailable.');
     const { data, error } = await getSupabaseClient().rpc('save_venue_map_config', {
       p_organization_id: context.organizationId,

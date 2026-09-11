@@ -68,6 +68,7 @@ import {
   isCoupleCloudEnabled,
   isPortalAccessError,
   pullGuestPortalSnapshot,
+  resolveAuthoritativePortalVenueMap,
 } from '../services/couples/coupleCloudSync';
 import {
   getCoupleGuests,
@@ -87,12 +88,17 @@ import {
   normalizeVenueRulesConfig,
 } from '../services/wayfinding/venueWayfindingService';
 import { VenueMapCanvas } from './VenueMapCanvas';
+import { VenueMapRainPlanGuidance } from './VenueMapRainPlanGuidance';
 import {
+  arrivalRoleLabel,
+  buildVenueMapDirectionSteps,
   findVenueMapRoute,
+  hasRenderableVenueMapContent,
   partitionVenueMapRainContingencyCollisions,
+  preferredVenueMapDirectionsStart,
   projectVenueMap,
   rainContingencyValidationIssue,
-  routePriorityLabel,
+  venueMapDirectionsContextKey,
 } from '../utils/venueMapDesigner';
 import {
   eventDates,
@@ -221,11 +227,16 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
   const [selectedWayfindingFrom, setSelectedWayfindingFrom] = useState('');
   const [selectedWayfindingTo, setSelectedWayfindingTo] = useState('');
   const [stepFreeOnly, setStepFreeOnly] = useState(false);
-  const [wayfindingResult, setWayfindingResult] = useState<string[] | null>(null);
+  const [wayfindingResult, setWayfindingResult] = useState<{
+    contextKey: string;
+    steps: string[];
+  } | null>(null);
 
-  const activeVenueMap = remoteVenueMap !== undefined
-    ? remoteVenueMap
-    : getVenueMapConfigForPortal();
+  const activeVenueMap = resolveAuthoritativePortalVenueMap(
+    remoteVenueMap,
+    cloudAccountInvite ? null : getVenueMapConfigForPortal(),
+    cloudAccountInvite,
+  );
   const activeVenueRules = remoteVenueRules !== undefined
     ? remoteVenueRules
     : getVenueRules();
@@ -239,6 +250,15 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
     () => (coupleEventId ? findCoupleEventById(coupleEventId) || remoteCouple : remoteCouple),
     [coupleEventId, remoteCouple],
   );
+  const wayfindingContextKey = useMemo(() => venueMapDirectionsContextKey(
+    activeVenueMap,
+    isCouplePortal ? (couple?.selectedSpaces || []) : [],
+    portalData.venues,
+    isCoupleCloudEnabled(),
+  ), [activeVenueMap, couple?.selectedSpaces, isCouplePortal, portalData.venues]);
+  const currentWayfindingSteps = wayfindingResult?.contextKey === wayfindingContextKey
+    ? wayfindingResult.steps
+    : null;
 
   // Shared helper: open a map point in Google Maps when it has GPS.
   const openInMaps = (p: VenueMapPoint) => {
@@ -934,9 +954,13 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
   };
 
   const handleGetDirections = () => {
+    const publishDirections = (steps: string[]) => setWayfindingResult({
+      contextKey: wayfindingContextKey,
+      steps,
+    });
     const sourceMap = activeVenueMap;
     if (!sourceMap) {
-      setWayfindingResult(['No venue-authored walking routes are published yet. Please ask venue staff for directions.']);
+      publishDirections(['No venue-authored walking routes are published yet. Please ask venue staff for directions.']);
       return;
     }
     const scopedMap = projectVenueMap(
@@ -949,7 +973,11 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
       },
     );
     const destinations = scopedMap.points.filter((point) => point.kind !== 'path');
-    const defaultStart = destinations.find((point) => point.kind === 'entry') || destinations[0];
+    const defaultStart = preferredVenueMapDirectionsStart(destinations, {
+      map: scopedMap,
+      destinationPointId: selectedWayfindingTo,
+      stepFreeOnly,
+    });
     const fromId = destinations.some((point) => point.id === selectedWayfindingFrom)
       ? selectedWayfindingFrom
       : defaultStart?.id || '';
@@ -957,15 +985,15 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
     const to = destinations.find((point) => point.id === selectedWayfindingTo);
 
     if (!to) {
-      setWayfindingResult(['Please select a destination.']);
+      publishDirections(['Please select a destination.']);
       return;
     }
     if (!from) {
-      setWayfindingResult(['Please select a starting location.']);
+      publishDirections(['Please select a starting location.']);
       return;
     }
     if (from.id === to.id) {
-      setWayfindingResult([`You're already at ${to.label}.`]);
+      publishDirections([`You're already at ${to.label}.`]);
       return;
     }
 
@@ -975,7 +1003,7 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
         stepFreeOnly,
         includeEmergencyOnly: true,
       });
-      setWayfindingResult(emergencyOnlyPath?.priority === 'emergency-only'
+      publishDirections(emergencyOnlyPath?.priority === 'emergency-only'
         ? [
             `Only an emergency-only path is published from ${from.label} to ${to.label}; it is not used for routine directions.`,
             'Please use on-site signs or ask venue staff for safe directions.',
@@ -989,16 +1017,7 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
       return;
     }
 
-    const steps = [`Start at ${from.label}.`];
-    if (from.description) steps.push(from.description);
-    path.routes.forEach((route) => {
-      const priority = routePriorityLabel(route.priority).toLowerCase();
-      steps.push(`Follow ${priority === 'standard' ? '' : `${priority} `}route “${route.name}”.`);
-      if (route.notes) steps.push(route.notes);
-    });
-    steps.push(`Arrive at ${to.label}.`);
-    if (to.description) steps.push(to.description);
-    setWayfindingResult(steps);
+    publishDirections(buildVenueMapDirectionSteps(scopedMap, path));
   };
 
   const lodgingVenues = useMemo(
@@ -1260,21 +1279,35 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
               venues: isCoupleCloudEnabled() ? undefined : portalData.venues,
             },
           );
-          if (guestMap.points.length === 0) return null;
+          const hasDrawableMap = hasRenderableVenueMapContent(guestMap);
+          const hasRainGuidance = guestMap.rainContingencies.length > 0;
+          if (!hasDrawableMap && !hasRainGuidance) return null;
           return (
             <div className="bg-white rounded-xl shadow p-4 mt-2">
-              <h2 className="text-sm font-semibold text-gray-800 mb-3">Venue Map</h2>
-              <VenueMapCanvas
-                map={guestMap}
-                onPointClick={openInMaps}
-                isPointInteractive={hasValidMapGps}
-                pointActionLabel={() => 'Open in maps.'}
-                hideMapWhenBackgroundUnavailable
-                onRetryBackgroundImage={() => setVenueMapRetryNonce((nonce) => nonce + 1)}
+              <h2 className="text-sm font-semibold text-gray-800 mb-3">
+                {hasDrawableMap ? 'Venue Map' : 'Rain Plan'}
+              </h2>
+              {hasDrawableMap && (
+                <VenueMapCanvas
+                  map={guestMap}
+                  onPointClick={openInMaps}
+                  isPointInteractive={hasValidMapGps}
+                  pointActionLabel={() => 'Open in maps.'}
+                  hideMapWhenBackgroundUnavailable
+                  onRetryBackgroundImage={() => setVenueMapRetryNonce((nonce) => nonce + 1)}
+                />
+              )}
+              <VenueMapRainPlanGuidance
+                rainContingencies={guestMap.rainContingencies}
+                venues={portalData.venues}
               />
-              <div className="mt-1 text-[10px] text-gray-400 px-1">
-                Tap a pin that has GPS to open it in Google Maps.
-              </div>
+              {hasDrawableMap && (
+                <div className="mt-1 text-[10px] text-gray-400 px-1">
+                  {guestMap.points.some(hasValidMapGps)
+                    ? 'Tap a pin that has GPS to open it in Google Maps.'
+                    : 'Venue-authored property map. GPS-enabled locations have not been added yet.'}
+                </div>
+              )}
             </div>
           );
         })()}
@@ -1586,24 +1619,51 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
     // Only treat wayfinding as available when there's at least one destination
     // point to route to (the venue may have drawn only decorative path dots).
     const hasWayfindingPoints = wayfindingPoints.length > 0;
-    const defaultStartId = wayfindingPoints.find((point) => point.kind === 'entry')?.id
-      || wayfindingPoints[0]?.id
-      || '';
-    const effectiveFromId = wayfindingPoints.some((point) => point.id === selectedWayfindingFrom)
-      ? selectedWayfindingFrom
-      : defaultStartId;
     const effectiveToId = wayfindingPoints.some((point) => point.id === selectedWayfindingTo)
       ? selectedWayfindingTo
       : '';
+    const defaultStartId = preferredVenueMapDirectionsStart(wayfindingPoints, {
+      map: venueMap || undefined,
+      destinationPointId: effectiveToId,
+      stepFreeOnly,
+    })?.id || '';
+    const effectiveFromId = wayfindingPoints.some((point) => point.id === selectedWayfindingFrom)
+      ? selectedWayfindingFrom
+      : defaultStartId;
+    const hasDrawableWayfindingMap = hasRenderableVenueMapContent(venueMap);
+    const hasWayfindingRainGuidance = (venueMap?.rainContingencies.length || 0) > 0;
 
     if (!hasWayfindingPoints) {
       return (
-        <div className="pb-24">
+        <div className="space-y-4 pb-24">
+          {(hasDrawableWayfindingMap || hasWayfindingRainGuidance) && (
+            <div className="bg-white rounded-xl shadow p-4 mt-4">
+              <h2 className="mb-3 text-sm font-semibold text-gray-800">
+                {hasDrawableWayfindingMap ? 'Venue Map' : 'Rain Plan'}
+              </h2>
+              {hasDrawableWayfindingMap && (
+                <VenueMapCanvas
+                  map={venueMap!}
+                  onPointClick={openInMaps}
+                  isPointInteractive={hasValidMapGps}
+                  pointActionLabel={() => 'Open in maps.'}
+                  hideMapWhenBackgroundUnavailable
+                  onRetryBackgroundImage={() => setVenueMapRetryNonce((nonce) => nonce + 1)}
+                />
+              )}
+              <VenueMapRainPlanGuidance
+                rainContingencies={venueMap!.rainContingencies}
+                venues={portalData.venues}
+              />
+            </div>
+          )}
           <div className="bg-white rounded-xl shadow p-4 mt-4 text-center space-y-2">
             <p className="text-2xl">🧭</p>
             <p className="text-sm font-medium text-gray-700">Directions coming soon</p>
             <p className="text-xs text-gray-500">
-              Venue maps and turn-by-turn directions will be available here. Contact the venue for early access.
+              {hasDrawableWayfindingMap || hasWayfindingRainGuidance
+                ? 'Turn-by-turn directions will be available after the venue adds routable map locations.'
+                : 'Venue maps and turn-by-turn directions will be available here. Contact the venue for early access.'}
             </p>
           </div>
         </div>
@@ -1621,6 +1681,10 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
             hideMapWhenBackgroundUnavailable
             onRetryBackgroundImage={() => setVenueMapRetryNonce((nonce) => nonce + 1)}
           />
+          <VenueMapRainPlanGuidance
+            rainContingencies={venueMap!.rainContingencies}
+            venues={portalData.venues}
+          />
           <div className="mt-1 text-[10px] text-gray-400 px-1">
             Tip: tap a GPS pin, or use the Map location actions list below, to open it in Google Maps.
           </div>
@@ -1634,8 +1698,9 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
                 onChange={(e) => { setSelectedWayfindingFrom(e.target.value); setWayfindingResult(null); }}
                 aria-label="Directions starting location"
               >
+                <option value="">Select starting location</option>
                 {wayfindingPoints.map((point) => (
-                  <option key={point.id} value={point.id}>{point.label}</option>
+                  <option key={point.id} value={point.id}>{point.label}{point.kind === 'entry' ? ` — ${arrivalRoleLabel(point.arrivalRole)}` : ''}</option>
                 ))}
               </select>
             </div>
@@ -1650,7 +1715,7 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
               >
                 <option value="">Select destination</option>
                 {wayfindingPoints.map((point) => (
-                  <option key={point.id} value={point.id}>{point.label}</option>
+                  <option key={point.id} value={point.id}>{point.label}{point.kind === 'entry' ? ` — ${arrivalRoleLabel(point.arrivalRole)}` : ''}</option>
                 ))}
               </select>
             </div>
@@ -1678,7 +1743,7 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
             </button>
           </div>
 
-          {wayfindingResult && (
+          {currentWayfindingSteps && (
             <div
               className="mt-4 bg-[var(--accent-light)] rounded-lg p-3 space-y-1"
               role="status"
@@ -1686,7 +1751,7 @@ const GuestPortalSession: React.FC<GuestPortalProps> = ({ guestToken, coupleEven
             >
               <p className="text-xs font-semibold text-[var(--accent-dark)]">Directions</p>
               <ul className="text-xs text-[var(--accent-dark)] list-disc list-inside space-y-1">
-                {wayfindingResult.map((step, idx) => (
+                {currentWayfindingSteps.map((step, idx) => (
                   <li key={idx}>{step}</li>
                 ))}
               </ul>
