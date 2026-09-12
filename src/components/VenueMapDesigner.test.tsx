@@ -1833,7 +1833,9 @@ describe('VenueMapDesigner', () => {
 
     clickSaveAndAcknowledgeWayfindingGaps();
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(screen.getByText(/1 guest destination has known wayfinding gaps/i)).toBeInTheDocument();
+    await waitFor(() => expect(
+      screen.getByText(/1 guest destination has known wayfinding gaps/i),
+    ).toBeInTheDocument());
     const savedRoute = onSave.mock.calls[0][0].routes[0];
     expect(savedRoute.pointIds).toEqual([map.points[0].id, map.points[2].id, map.points[1].id]);
     expect(savedRoute.audience).toBe('couple');
@@ -2589,7 +2591,12 @@ describe('VenueMapDesigner', () => {
       supplementalSections: expectedArtifactGuidance,
     }));
 
-    fireEvent.click(screen.getByRole('button', { name: /Guest preview PDF/i }));
+    const guestPdfButton = screen.getByRole('button', { name: /Guest preview PDF/i });
+    // Visual artifacts are intentionally serialized. The PNG mock is observed as
+    // soon as it is invoked, before the export effect's guarded cleanup necessarily
+    // re-enables the controls under full-suite load.
+    await waitFor(() => expect(guestPdfButton).toBeEnabled());
+    fireEvent.click(guestPdfButton);
     await waitFor(() => expect(downloadLayoutPdf).toHaveBeenCalledTimes(1));
     expect(vi.mocked(downloadLayoutPdf).mock.calls[0][2]).toEqual(expect.objectContaining({
       supplementalSections: expectedArtifactGuidance,

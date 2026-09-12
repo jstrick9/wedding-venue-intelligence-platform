@@ -144,10 +144,10 @@ describe('Venue Portal (#/admin) — Complete Universal Branding Audit & Home/La
     expect(headerEl?.getAttribute('style')).toContain('rgb(16, 185, 129)');
   });
 
-  it('renders VenueManagement with dynamically styled Shape Builder and Lodging buttons', () => {
+  it('renders VenueManagement with dynamically styled safe Geometry and Lodging buttons', () => {
     render(<VenueManagement {...dummyProps} />);
 
-    const shapeBtn = screen.getByRole('button', { name: /Shape Builder/i });
+    const shapeBtn = screen.getByRole('button', { name: /Edit Geometry/i });
     expect(shapeBtn.getAttribute('style')).toContain('linear-gradient(135deg, rgb(16, 185, 129), rgb(52, 211, 153))');
 
     const lodgingBtn = screen.getByRole('button', { name: /^🏨 Lodging$/i });

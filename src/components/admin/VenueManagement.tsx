@@ -3,6 +3,8 @@ import { BrandedSectionHeader, BrandedStatCard, BrandedTips, PatternColorPicker 
 import MultiImageUpload from '../MultiImageUpload';
 import { LayoutCategory, PatternType, ShapeType, Venue } from '../../types';
 import type { AdminCommonProps } from './AdminTabTypes';
+import { effectiveCanvasGeometry } from '../../utils/venueGeometry';
+import { createEntityId } from '../../utils/entityId';
 
 export function VenueManagement(props: AdminCommonProps) {
   const {
@@ -56,7 +58,7 @@ export function VenueManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const preset: Venue = {
-                        id: `venue-${Date.now()}`,
+                        id: createEntityId('venue', venues.map((venue) => venue.id)),
                         name: 'Reception Venue',
                         width: 60,
                         height: 40,
@@ -87,7 +89,7 @@ export function VenueManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const preset: Venue = {
-                        id: `venue-${Date.now()}`,
+                        id: createEntityId('venue', venues.map((venue) => venue.id)),
                         name: 'Cocktail Hour Venue',
                         width: 40,
                         height: 30,
@@ -113,7 +115,7 @@ export function VenueManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const preset: Venue = {
-                        id: `venue-${Date.now()}`,
+                        id: createEntityId('venue', venues.map((venue) => venue.id)),
                         name: 'Ceremony Venue',
                         width: 80,
                         height: 60,
@@ -139,7 +141,7 @@ export function VenueManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const preset: Venue = {
-                        id: `venue-${Date.now()}`,
+                        id: createEntityId('venue', venues.map((venue) => venue.id)),
                         name: 'Lodging Venue',
                         width: 40,
                         height: 30,
@@ -151,7 +153,7 @@ export function VenueManagement(props: AdminCommonProps) {
                         isMaster: true,
                         rooms: [],
                         floors: [{
-                          id: `floor-${Date.now()}`,
+                          id: createEntityId('floor', venues.flatMap((venue) => (venue.floors || []).map((floor) => floor.id))),
                           name: 'Floor 1',
                           level: 1,
                           width: 40,
@@ -179,7 +181,7 @@ export function VenueManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const preset: Venue = {
-                        id: `venue-${Date.now()}`,
+                        id: createEntityId('venue', venues.map((venue) => venue.id)),
                         name: 'Rehearsal Dinner Venue',
                         width: 30,
                         height: 25,
@@ -234,7 +236,7 @@ export function VenueManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const newVenue: Venue = {
-                        id: `venue-${Date.now()}`,
+                        id: createEntityId('venue', venues.map((venue) => venue.id)),
                         name: 'New Venue',
                         width: 50,
                         height: 30,
@@ -330,7 +332,7 @@ export function VenueManagement(props: AdminCommonProps) {
                           e.stopPropagation();
                           const copy: Venue = {
                             ...venue,
-                            id: `venue-${Date.now()}`,
+                            id: createEntityId('venue', venues.map((venue) => venue.id)),
                             name: `${venue.name} (Copy)`,
                             masterLayout: undefined
                           };
@@ -380,34 +382,9 @@ export function VenueManagement(props: AdminCommonProps) {
                           <div className="flex flex-col sm:flex-row gap-2">
                             <select
                               value={venue.shape || 'rectangle'}
-                              onChange={(e) => {
-                                const nextShape = e.target.value as ShapeType;
-                                handleSaveVenues(venues.map(v => {
-                                  if (v.id !== venue.id) return v;
-                                  if (nextShape === 'custom') {
-                                    return {
-                                      ...v,
-                                      shape: 'custom',
-                                      isCustomShape: true,
-                                      shapePoints: v.shapePoints && v.shapePoints.length >= 3
-                                        ? v.shapePoints
-                                        : [
-                                            { x: 0, y: 0 },
-                                            { x: v.width, y: 0 },
-                                            { x: v.width, y: v.height },
-                                            { x: 0, y: v.height }
-                                          ],
-                                      customPath: v.customPath || `M 0 0 L ${v.width} 0 L ${v.width} ${v.height} L 0 ${v.height} Z`
-                                    };
-                                  }
-                                  return {
-                                    ...v,
-                                    shape: nextShape,
-                                    isCustomShape: false
-                                  };
-                                }));
-                              }}
-                              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent bg-white"
+                              disabled
+                              aria-label="Current venue shape"
+                              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-600"
                             >
                               <option value="rectangle">Rectangle</option>
                               <option value="l-shape">L-Shape</option>
@@ -421,9 +398,9 @@ export function VenueManagement(props: AdminCommonProps) {
                               style={{
                                 background: `linear-gradient(135deg, ${config.primaryColor || '#4A1942'}, ${config.primaryLight || '#6b2c5c'})`,
                               }}
-                              title="Open venue shape builder"
+                              title="Open impact-reviewed venue geometry editor"
                             >
-                              ✏️ Shape Builder
+                              🛡️ Edit Geometry
                             </button>
                             <button
                               onClick={() => setLodgingVenueId(venue.id)}
@@ -436,57 +413,11 @@ export function VenueManagement(props: AdminCommonProps) {
                               🏨 Lodging
                             </button>
                           </div>
-                          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
-                            {[
-                              { key: 'rectangle', label: 'Rectangle' },
-                              { key: 'l-shape', label: 'L-Shape' },
-                              { key: 't-shape', label: 'T-Shape' },
-                              { key: 'u-shape', label: 'U-Shape' },
-                              { key: 'custom', label: 'Custom' },
-                            ].map(option => (
-                              <button
-                                key={option.key}
-                                type="button"
-                                onClick={() => {
-                                  const nextShape = option.key as ShapeType;
-                                  handleSaveVenues(venues.map(v => {
-                                    if (v.id !== venue.id) return v;
-                                    if (nextShape === 'custom') {
-                                      return {
-                                        ...v,
-                                        shape: 'custom',
-                                        isCustomShape: true,
-                                        shapePoints: v.shapePoints && v.shapePoints.length >= 3
-                                          ? v.shapePoints
-                                          : [
-                                              { x: 0, y: 0 },
-                                              { x: v.width, y: 0 },
-                                              { x: v.width, y: v.height },
-                                              { x: 0, y: v.height }
-                                            ],
-                                        customPath: v.customPath || `M 0 0 L ${v.width} 0 L ${v.width} ${v.height} L 0 ${v.height} Z`
-                                      };
-                                    }
-                                    return { ...v, shape: nextShape, isCustomShape: false };
-                                  }));
-                                }}
-                                className={`px-2 py-2 rounded-lg border font-medium transition-colors ${(venue.shape || 'rectangle') === option.key ? 'font-bold shadow-sm' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'}`}
-                                style={
-                                  (venue.shape || 'rectangle') === option.key
-                                    ? {
-                                        backgroundColor: `color-mix(in srgb, ${config.primaryColor || '#4A1942'} 12%, transparent)`,
-                                        borderColor: config.primaryColor || '#4A1942',
-                                        color: config.primaryColor || '#4A1942',
-                                      }
-                                    : undefined
-                                }
-                              >
-                                {option.label}
-                              </button>
-                            ))}
+                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                            Current footprint: <strong className="capitalize">{(venue.shape || 'rectangle').replace('-', ' ')}</strong>. Choose a new shape inside the draft editor.
                           </div>
                           <p className="text-xs" style={{ color: config.primaryColor || '#4A1942' }}>
-                            Use the shape builder for truly custom venues. It supports draggable points, starter templates, direct dimension editing, and live scaling to your venue width and height.
+                            Geometry changes open as a local draft with custom-point tools and cross-layout impact review. Only explicit Apply persists them.
                           </p>
                         </div>
                       </div>
@@ -495,7 +426,7 @@ export function VenueManagement(props: AdminCommonProps) {
                         <input
                           type="number"
                           value={venue.width}
-                          onChange={(e) => handleSaveVenues(venues.map(v => v.id === venue.id ? { ...v, width: parseInt(e.target.value) || 0 } : v))}
+                          readOnly
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent"
                         />
                       </div>
@@ -504,7 +435,7 @@ export function VenueManagement(props: AdminCommonProps) {
                         <input
                           type="number"
                           value={venue.height}
-                          onChange={(e) => handleSaveVenues(venues.map(v => v.id === venue.id ? { ...v, height: parseInt(e.target.value) || 0 } : v))}
+                          readOnly
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent"
                         />
                       </div>
@@ -664,8 +595,8 @@ export function VenueManagement(props: AdminCommonProps) {
                           <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Canvas Width (ft)</label>
                           <input
                             type="number"
-                            value={venue.canvasWidth || venue.width + 80}
-                            onChange={(e) => handleSaveVenues(venues.map(v => v.id === venue.id ? { ...v, canvasWidth: parseInt(e.target.value) || venue.width + 80 } : v))}
+                            value={effectiveCanvasGeometry(venue).canvasWidth}
+                            readOnly
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                             min={venue.width + 10}
                           />
@@ -675,8 +606,8 @@ export function VenueManagement(props: AdminCommonProps) {
                           <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Canvas Height (ft)</label>
                           <input
                             type="number"
-                            value={venue.canvasHeight || venue.height + 80}
-                            onChange={(e) => handleSaveVenues(venues.map(v => v.id === venue.id ? { ...v, canvasHeight: parseInt(e.target.value) || venue.height + 80 } : v))}
+                            value={effectiveCanvasGeometry(venue).canvasHeight}
+                            readOnly
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                             min={venue.height + 10}
                           />
@@ -686,8 +617,8 @@ export function VenueManagement(props: AdminCommonProps) {
                           <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Venue X Position (ft)</label>
                           <input
                             type="number"
-                            value={venue.venueX ?? (venue.exteriorPadding?.left || 40)}
-                            onChange={(e) => handleSaveVenues(venues.map(v => v.id === venue.id ? { ...v, venueX: parseInt(e.target.value) || 0 } : v))}
+                            value={effectiveCanvasGeometry(venue).venueX}
+                            readOnly
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                             min={0}
                           />
@@ -697,8 +628,8 @@ export function VenueManagement(props: AdminCommonProps) {
                           <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Venue Y Position (ft)</label>
                           <input
                             type="number"
-                            value={venue.venueY ?? (venue.exteriorPadding?.top || 40)}
-                            onChange={(e) => handleSaveVenues(venues.map(v => v.id === venue.id ? { ...v, venueY: parseInt(e.target.value) || 0 } : v))}
+                            value={effectiveCanvasGeometry(venue).venueY}
+                            readOnly
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                             min={0}
                           />

@@ -56,6 +56,7 @@ export const DrawingTool: React.FC<DrawingToolProps> = ({ onSave, onClose }) => 
   const [zoom, setZoom] = useState(100);
   const [history, setHistory] = useState<ImageData[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const historyIndexRef = useRef(-1);
   const [rotation, setRotation] = useState(0);
   const [opacity, setOpacity] = useState(100);
   // Text elements state (for future use)
@@ -71,7 +72,26 @@ export const DrawingTool: React.FC<DrawingToolProps> = ({ onSave, onClose }) => 
   const canvasWidth = 500;
   const canvasHeight = 400;
 
-  // Initialize canvas
+  const saveToHistory = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const imageData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
+        const currentIndex = historyIndexRef.current;
+        setHistory(prev => {
+          const newHistory = prev.slice(0, currentIndex + 1);
+          newHistory.push(imageData);
+          return newHistory.slice(-50); // Keep last 50 states
+        });
+        const nextIndex = Math.min(currentIndex + 1, 49);
+        historyIndexRef.current = nextIndex;
+        setHistoryIndex(nextIndex);
+      }
+    }
+  }, []);
+
+  // Initialize the raster and its first undo snapshot exactly once per mount.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (canvas) {
@@ -82,23 +102,7 @@ export const DrawingTool: React.FC<DrawingToolProps> = ({ onSave, onClose }) => 
         saveToHistory();
       }
     }
-  }, []);
-
-  const saveToHistory = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        const imageData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
-        setHistory(prev => {
-          const newHistory = prev.slice(0, historyIndex + 1);
-          newHistory.push(imageData);
-          return newHistory.slice(-50); // Keep last 50 states
-        });
-        setHistoryIndex(prev => Math.min(prev + 1, 49));
-      }
-    }
-  }, [historyIndex]);
+  }, [saveToHistory]);
 
   const undo = () => {
     if (historyIndex > 0) {
@@ -107,7 +111,9 @@ export const DrawingTool: React.FC<DrawingToolProps> = ({ onSave, onClose }) => 
         const ctx = canvas.getContext('2d');
         if (ctx && history[historyIndex - 1]) {
           ctx.putImageData(history[historyIndex - 1], 0, 0);
-          setHistoryIndex(prev => prev - 1);
+          const nextIndex = historyIndex - 1;
+          historyIndexRef.current = nextIndex;
+          setHistoryIndex(nextIndex);
         }
       }
     }
@@ -120,7 +126,9 @@ export const DrawingTool: React.FC<DrawingToolProps> = ({ onSave, onClose }) => 
         const ctx = canvas.getContext('2d');
         if (ctx && history[historyIndex + 1]) {
           ctx.putImageData(history[historyIndex + 1], 0, 0);
-          setHistoryIndex(prev => prev + 1);
+          const nextIndex = historyIndex + 1;
+          historyIndexRef.current = nextIndex;
+          setHistoryIndex(nextIndex);
         }
       }
     }

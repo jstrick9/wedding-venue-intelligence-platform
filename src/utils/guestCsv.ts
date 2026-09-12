@@ -1,4 +1,5 @@
 import type { Guest } from '../types';
+import { createEntityId } from './entityId';
 
 /**
  * Pure CSV → guest-list parsing. Kept separate from React state so it can be
@@ -89,7 +90,7 @@ export function parseGuestCsv(
       : '';
 
     guests.push({
-      id: `guest-${Date.now()}-${i}`,
+      id: createEntityId('guest', [...existing, ...guests].map((guest) => guest.id)),
       name,
       group: group || undefined,
       email: emailIndex >= 0 ? values[emailIndex]?.trim() || undefined : undefined,

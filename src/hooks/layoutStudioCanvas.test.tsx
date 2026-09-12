@@ -1,6 +1,8 @@
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { useLayoutState, setTableSpecs, setFixtureTypes, setVenues, setDecorItems, setTemplates, getTemplates, getVenues } from './useLayoutState';
+import { useLayoutState, setTableSpecs, setFixtureTypes, setVenues, setDecorItems, setTemplates, getTemplates, getVenues, getSavedLayouts } from './useLayoutState';
+import { venueGeometrySignature } from '../utils/venueGeometry';
+import { on } from '../utils/appEvents';
 
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
@@ -42,6 +44,19 @@ describe('layout studio canvas (venue admin)', () => {
     expect(result.current.layout.fixtures[0].label).toBe('Dance Floor');
   });
 
+  it('keeps rapid same-millisecond placements uniquely addressable', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    const { result } = renderHook(() => useLayoutState('ballroom'));
+    act(() => {
+      for (let index = 0; index < 25; index += 1) {
+        result.current.addTable('round-60', { x: index, y: index });
+      }
+    });
+    const ids = result.current.layout.tables.map((table) => table.id);
+    expect(new Set(ids).size).toBe(25);
+    vi.restoreAllMocks();
+  });
+
   it('moves and duplicates a placed table', () => {
     const { result } = renderHook(() => useLayoutState('ballroom'));
     act(() => { result.current.addTable('round-60', { x: 10, y: 10 }); });
@@ -74,17 +89,101 @@ describe('layout studio canvas (venue admin)', () => {
     expect(venue?.isMaster).toBe(true);
   });
 
+  it('applies geometry onto the latest venue without overwriting fields or item coordinates', () => {
+    const { result } = renderHook(() => useLayoutState('ballroom'));
+    act(() => {
+      result.current.addTable('round-60', { x: 12.375, y: 9.625 });
+      result.current.addFixture('dance-floor', { x: 41.125, y: 30.875 });
+      result.current.addDecor('centerpiece', { x: 6.75, y: 7.25 });
+    });
+    act(() => { result.current.saveLayout('Coordinate proof'); });
+    const exactCoordinates = {
+      table: { x: result.current.layout.tables[0].x, y: result.current.layout.tables[0].y },
+      fixture: { x: result.current.layout.fixtures[0].x, y: result.current.layout.fixtures[0].y },
+      decor: { x: result.current.layout.decor[0].x, y: result.current.layout.decor[0].y },
+    };
+    const openedVenue = { ...result.current.currentVenue };
+    const baseline = venueGeometrySignature(openedVenue);
+
+    act(() => {
+      setVenues([{
+        ...openedVenue,
+        name: 'Ballroom renamed elsewhere',
+        capacity: 300,
+        masterLayout: { tables: [], fixtures: [], decor: [], savedAt: 'latest' },
+      }]);
+    });
+
+    let venueChangeEvents = 0;
+    const stopListening = on('spm_data_changed', (detail) => {
+      if (detail?.type === 'venues') venueChangeEvents += 1;
+    });
+    let status: ReturnType<typeof result.current.updateCurrentVenue> | undefined;
+    act(() => {
+      status = result.current.updateCurrentVenue(
+        { ...openedVenue, width: 90, canvasWidth: 130 },
+        baseline,
+      );
+    });
+    stopListening();
+
+    expect(status).toBe('applied');
+    expect(venueChangeEvents).toBe(1);
+    expect(getVenues()[0]).toMatchObject({
+      name: 'Ballroom renamed elsewhere',
+      capacity: 300,
+      width: 90,
+      canvasWidth: 130,
+    });
+    expect(getVenues()[0].masterLayout?.savedAt).toBe('latest');
+    expect({ x: result.current.layout.tables[0].x, y: result.current.layout.tables[0].y }).toEqual(exactCoordinates.table);
+    expect({ x: result.current.layout.fixtures[0].x, y: result.current.layout.fixtures[0].y }).toEqual(exactCoordinates.fixture);
+    expect({ x: result.current.layout.decor[0].x, y: result.current.layout.decor[0].y }).toEqual(exactCoordinates.decor);
+    const persisted = getSavedLayouts().find((layout) => layout.name === 'Coordinate proof');
+    expect({ x: persisted?.tables[0].x, y: persisted?.tables[0].y }).toEqual(exactCoordinates.table);
+    expect({ x: persisted?.fixtures[0].x, y: persisted?.fixtures[0].y }).toEqual(exactCoordinates.fixture);
+    expect({ x: persisted?.decor?.[0].x, y: persisted?.decor?.[0].y }).toEqual(exactCoordinates.decor);
+  });
+
+  it('rejects stale geometry and never resurrects a deleted venue', () => {
+    const { result } = renderHook(() => useLayoutState('ballroom'));
+    const openedVenue = { ...result.current.currentVenue };
+    const baseline = venueGeometrySignature(openedVenue);
+
+    act(() => {
+      setVenues([{ ...openedVenue, width: 75 }]);
+    });
+    let conflict: ReturnType<typeof result.current.updateCurrentVenue> | undefined;
+    act(() => {
+      conflict = result.current.updateCurrentVenue({ ...openedVenue, width: 90 }, baseline);
+    });
+    expect(conflict).toBe('conflict');
+    expect(getVenues()[0].width).toBe(75);
+
+    act(() => setVenues([]));
+    let missing: ReturnType<typeof result.current.updateCurrentVenue> | undefined;
+    act(() => {
+      missing = result.current.updateCurrentVenue({ ...openedVenue, width: 95 }, baseline);
+    });
+    expect(missing).toBe('venue-changed');
+    expect(getVenues().some((candidate) => candidate.id === openedVenue.id)).toBe(false);
+  });
+
   it('loads a template onto the canvas', () => {
     setTemplates([
       {
         id: 'tpl-1', name: 'Classic Reception', category: 'reception', venueId: 'ballroom',
         tables: [{ id: 'T1', type: 'table', specId: 'round-60', x: 5, y: 5, rotation: 0, label: 'T1', guests: [] }],
-        fixtures: [], createdAt: new Date().toISOString(),
+        fixtures: [],
+        decor: [{ id: 'D1', decorItemId: 'centerpiece', x: 6, y: 6, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, zIndex: 1, parentType: 'table', parentId: 'T1' }],
+        createdAt: new Date().toISOString(),
       },
     ] as any);
     const { result } = renderHook(() => useLayoutState('ballroom'));
     act(() => { result.current.loadTemplate(getTemplates()[0]); });
     expect(result.current.layout.tables).toHaveLength(1);
+    expect(result.current.layout.tables[0].id).toBe('T1');
+    expect(result.current.layout.decor[0]).toMatchObject({ id: 'D1', parentType: 'table', parentId: 'T1' });
     expect(result.current.layout.name).toBe('Classic Reception');
   });
 });

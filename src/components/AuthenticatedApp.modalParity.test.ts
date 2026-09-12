@@ -61,7 +61,7 @@ describe('AuthenticatedApp modal render parity', () => {
     const known = [
       'vendors', 'timeline', 'admin', 'templates', 'print',
       'operations', 'messages', 'submission', 'eventQuestions',
-      'decorDesigner', 'overview',
+      'decorDesigner',
     ];
     // Every known modal must be present.
     for (const k of known) expect(modals).toContain(k);

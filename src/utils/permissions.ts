@@ -105,7 +105,8 @@ export function canManageOperationsData(user: User | null | undefined): boolean 
   return canAccessOperationsPanel(user);
 }
 
-export function canUseTableSpec(user: User | null | undefined, _spec: TableSpec): boolean {
+export function canUseTableSpec(user: User | null | undefined, spec: TableSpec): boolean {
+  if (spec.archived) return false;
   if (userHasAssignedRoles(user)) return canEditLayout(user);
   if (isAdminUser(user)) return true;
   if (!canEditLayout(user)) return false;
@@ -123,6 +124,7 @@ export function canSeeFixtureType(user: User | null | undefined, fixture: Fixtur
 }
 
 export function canPlaceFixtureType(user: User | null | undefined, fixture: FixtureType): boolean {
+  if (fixture.archived) return false;
   if (userHasAssignedRoles(user)) {
     if (!canEditLayout(user)) return false;
     if (fixture.visibleToUsers === false && !hasGranularPermission(user, 'admin.panel.access')) return false;

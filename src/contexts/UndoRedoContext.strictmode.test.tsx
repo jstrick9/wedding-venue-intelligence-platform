@@ -4,19 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { UndoRedoProvider } from './UndoRedoContext';
 import { emit, type UndoSnapshot } from '../utils/appEvents';
 
-/**
- * Review #267 (Phase 4 batch 5 — FloorPlanCanvas/layout deep audit): F-267-1.
- *
- * The undo/redo history used to perform nested state updates INSIDE state
- * updaters (`setPast`/`setFuture`/`onRestore` called within another updater's
- * body). React updaters must be pure — StrictMode double-invokes them in
- * development, and concurrent rendering may replay them in production. Each
- * double-invoke appended a DUPLICATE entry to the undo stack, so one Ctrl+Z
- * press could fire onRestore twice and a second press appeared to do nothing
- * (it "undid" the duplicate). This test renders the provider inside StrictMode
- * (the app runs StrictMode in main.tsx) and pins the pure-updater behavior.
- */
-
 const snap = (n: number): UndoSnapshot => ({
   tables: [{ n }],
   fixtures: [],
@@ -36,52 +23,70 @@ function pressRedo() {
   });
 }
 
-describe('UndoRedoProvider keeps updaters pure (F-267-1)', () => {
-  it('one undo press restores the previous snapshot exactly once', () => {
-    const onRestore = vi.fn();
-    render(
-      <StrictMode>
-        <UndoRedoProvider onRestore={onRestore}>
-          <div />
-        </UndoRedoProvider>
-      </StrictMode>,
-    );
+function renderHistory(initial = snap(0)) {
+  let current = initial;
+  const restored: UndoSnapshot[] = [];
+  const onRestore = vi.fn((snapshot: UndoSnapshot) => {
+    current = snapshot;
+    restored.push(snapshot);
+  });
+  render(
+    <StrictMode>
+      <UndoRedoProvider onRestore={onRestore} getCurrentSnapshot={() => current}>
+        <div />
+      </UndoRedoProvider>
+    </StrictMode>,
+  );
+  return {
+    onRestore,
+    restored,
+    mutateTo(next: UndoSnapshot) {
+      act(() => { emit('spm_push_undo_snapshot', current); });
+      current = next;
+    },
+    current: () => current,
+  };
+}
 
-    act(() => { emit('spm_push_undo_snapshot', snap(1)); });
-    act(() => { emit('spm_push_undo_snapshot', snap(2)); });
+describe('UndoRedoProvider pre-action history contract', () => {
+  it('undoes the very first action exactly once under StrictMode', () => {
+    const history = renderHistory(snap(0));
+    history.mutateTo(snap(1));
 
     pressUndo();
+    expect(history.onRestore).toHaveBeenCalledTimes(1);
+    expect(history.current()).toEqual(snap(0));
 
-    // The restore side effect must run exactly once per press — the buggy
-    // nested-updater version fired it twice (once per double-invocation).
-    expect(onRestore).toHaveBeenCalledTimes(1);
-    expect(onRestore).toHaveBeenCalledWith(snap(1));
-
-    // History held exactly two snapshots; after undoing back to snapshot 1
-    // there is nothing earlier left to restore (the duplicate-entry bug made
-    // a second press "restore" snapshot 1 again).
     pressUndo();
-    expect(onRestore).toHaveBeenCalledTimes(1);
+    expect(history.onRestore).toHaveBeenCalledTimes(1);
   });
 
-  it('undo → redo round-trips under StrictMode', () => {
-    const onRestore = vi.fn();
-    render(
-      <StrictMode>
-        <UndoRedoProvider onRestore={onRestore}>
-          <div />
-        </UndoRedoProvider>
-      </StrictMode>,
-    );
-
-    act(() => { emit('spm_push_undo_snapshot', snap(1)); });
-    act(() => { emit('spm_push_undo_snapshot', snap(2)); });
+  it('walks one action at a time and redo round-trips exact live states', () => {
+    const history = renderHistory(snap(0));
+    history.mutateTo(snap(1));
+    history.mutateTo(snap(2));
 
     pressUndo();
-    expect(onRestore).toHaveBeenLastCalledWith(snap(1));
-
+    expect(history.current()).toEqual(snap(1));
+    pressUndo();
+    expect(history.current()).toEqual(snap(0));
     pressRedo();
-    expect(onRestore).toHaveBeenLastCalledWith(snap(2));
-    expect(onRestore).toHaveBeenCalledTimes(2);
+    expect(history.current()).toEqual(snap(1));
+    pressRedo();
+    expect(history.current()).toEqual(snap(2));
+    expect(history.onRestore).toHaveBeenCalledTimes(4);
+  });
+
+  it('clears the redo branch when a new action starts after Undo', () => {
+    const history = renderHistory(snap(0));
+    history.mutateTo(snap(1));
+    history.mutateTo(snap(2));
+    pressUndo();
+    expect(history.current()).toEqual(snap(1));
+
+    history.mutateTo(snap(3));
+    pressRedo();
+    expect(history.current()).toEqual(snap(3));
+    expect(history.onRestore).toHaveBeenCalledTimes(1);
   });
 });

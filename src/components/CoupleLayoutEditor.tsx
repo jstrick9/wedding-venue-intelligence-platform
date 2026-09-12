@@ -13,6 +13,9 @@ import {
   CoupleSpaceLayout,
 } from '../types';
 import { useBrandingConfig } from '../config';
+import { layoutSeatCount } from '../utils/layoutSeating';
+import { effectiveCanvasGeometry } from '../utils/venueGeometry';
+import { createEntityId } from '../utils/entityId';
 
 interface Props {
   venue: Venue;
@@ -30,8 +33,6 @@ interface PendingItem {
   specId: string;
 }
 
-const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-
 /**
  * A self-contained layout editor for a single couple space. Reuses the venue's
  * FloorPlanCanvas + catalog (tables/chairs, fixtures, decor) so the couple can
@@ -43,6 +44,9 @@ export function CoupleLayoutEditor({ venue, initial, guestCount, onSave, onClose
   const [tables, setTables] = useState<PlacedTable[]>(initial?.tables || []);
   const [fixtures, setFixtures] = useState<PlacedFixture[]>(initial?.fixtures || []);
   const [decor, setDecor] = useState<PlacedDecor[]>(initial?.decor || []);
+  // Legacy/master ceremony rows are not edited in the simplified couple tool,
+  // but they must remain visible and survive every save round-trip.
+  const [ceremonyRows] = useState(() => initial?.ceremonyRows || []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(0.9);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -55,12 +59,19 @@ export function CoupleLayoutEditor({ venue, initial, guestCount, onSave, onClose
 
   // Palette groups (only catalogs relevant to this space's category).
   const category = venue.category;
+  const pendingFixture = pending?.kind === 'fixture'
+    ? fixtureTypes.find((fixture) => fixture.id === pending.specId)
+    : undefined;
+  const pendingUsesCanvasCoordinates = pending?.kind === 'decor'
+    || !!pendingFixture?.isExterior
+    || pendingFixture?.category === 'exterior';
 
   const place = (position: { x: number; y: number }) => {
     if (!pending) return;
+    const canvas = effectiveCanvasGeometry(venue);
     const pos = {
-      x: Math.max(0, Math.min(position.x, venue.width - 2)),
-      y: Math.max(0, Math.min(position.y, venue.height - 2)),
+      x: Math.max(0, Math.min(position.x, (pendingUsesCanvasCoordinates ? canvas.canvasWidth : venue.width) - 2)),
+      y: Math.max(0, Math.min(position.y, (pendingUsesCanvasCoordinates ? canvas.canvasHeight : venue.height) - 2)),
     };
     if (pending.kind === 'table') {
       const spec = tableSpecs.find((s) => s.id === pending.specId);
@@ -68,7 +79,7 @@ export function CoupleLayoutEditor({ venue, initial, guestCount, onSave, onClose
       setTables((prev) => [
         ...prev,
         {
-          id: uid('t'),
+          id: createEntityId('table', [...tables, ...fixtures, ...decor].map((item) => item.id)),
           type: 'table',
           specId: spec.id,
           x: pos.x,
@@ -85,14 +96,14 @@ export function CoupleLayoutEditor({ venue, initial, guestCount, onSave, onClose
       setFixtures((prev) => [
         ...prev,
         {
-          id: uid('f'),
+          id: createEntityId('fixture', [...tables, ...fixtures, ...decor].map((item) => item.id)),
           type: 'fixture',
           specId: spec.id,
           x: pos.x,
           y: pos.y,
           rotation: 0,
           label: spec.name,
-          isExterior: spec.isExterior,
+          isExterior: !!spec.isExterior || spec.category === 'exterior',
         },
       ]);
     } else {
@@ -101,7 +112,7 @@ export function CoupleLayoutEditor({ venue, initial, guestCount, onSave, onClose
       setDecor((prev) => [
         ...prev,
         {
-          id: uid('d'),
+          id: createEntityId('decor', [...tables, ...fixtures, ...decor].map((item) => item.id)),
           decorItemId: spec.id,
           x: pos.x,
           y: pos.y,
@@ -118,13 +129,27 @@ export function CoupleLayoutEditor({ venue, initial, guestCount, onSave, onClose
   };
 
   const move = (id: string, position: { x: number; y: number }, isExterior?: boolean) => {
-    const pos = {
-      x: Math.max(0, Math.min(position.x, (venue.canvasWidth || venue.width + 80) - 2)),
-      y: Math.max(0, Math.min(position.y, (venue.canvasHeight || venue.height + 80) - 2)),
-    };
-    setTables((prev) => prev.map((t) => (t.id === id ? { ...t, x: pos.x, y: pos.y } : t)));
-    setFixtures((prev) => prev.map((f) => (f.id === id ? { ...f, x: pos.x, y: pos.y, isExterior: isExterior ?? f.isExterior } : f)));
-    setDecor((prev) => prev.map((d) => (d.id === id ? { ...d, x: pos.x, y: pos.y } : d)));
+    const canvas = effectiveCanvasGeometry(venue);
+    const clampPosition = (canvasAnchored: boolean) => ({
+      x: Math.max(0, Math.min(position.x, (canvasAnchored ? canvas.canvasWidth : venue.width) - 2)),
+      y: Math.max(0, Math.min(position.y, (canvasAnchored ? canvas.canvasHeight : venue.height) - 2)),
+    });
+    setTables((prev) => prev.map((table) => {
+      if (table.id !== id) return table;
+      const next = clampPosition(false);
+      return { ...table, x: next.x, y: next.y };
+    }));
+    setFixtures((prev) => prev.map((fixture) => {
+      if (fixture.id !== id) return fixture;
+      const canvasAnchored = isExterior ?? fixture.isExterior ?? false;
+      const next = clampPosition(canvasAnchored);
+      return { ...fixture, x: next.x, y: next.y, isExterior: canvasAnchored };
+    }));
+    setDecor((prev) => prev.map((item) => {
+      if (item.id !== id) return item;
+      const next = clampPosition(item.parentType === 'canvas');
+      return { ...item, x: next.x, y: next.y };
+    }));
   };
 
   const removeSelected = () => {
@@ -136,18 +161,14 @@ export function CoupleLayoutEditor({ venue, initial, guestCount, onSave, onClose
   };
 
   const handleSave = () => {
-    onSave({ tables, fixtures, decor, updatedAt: new Date().toISOString() });
+    onSave({ tables, fixtures, decor, ceremonyRows, updatedAt: new Date().toISOString() });
   };
 
-  const count = tables.length + fixtures.length + decor.length;
+  const count = tables.length + fixtures.length + decor.length + ceremonyRows.length;
 
-  // Seating capacity from placed tables (with per-table overrides), to show the
-  // couple whether their plan seats everyone.
-  const seatingCapacity = tables.reduce((sum, t) => {
-    const spec = tableSpecs.find((s) => s.id === t.specId);
-    if (!spec) return sum;
-    return sum + (t.customCapacity ?? spec.capacity ?? 0);
-  }, 0);
+  // Configured chair count is the shared capacity source used by venue, couple,
+  // guest-assignment, canvas, and print surfaces.
+  const seatingCapacity = layoutSeatCount(tables, tableSpecs, ceremonyRows);
   const capacityShort = !!guestCount && seatingCapacity < guestCount;
 
   return (
@@ -284,6 +305,7 @@ export function CoupleLayoutEditor({ venue, initial, guestCount, onSave, onClose
               tables={tables}
               fixtures={fixtures}
               decor={decor}
+              ceremonyRows={ceremonyRows}
               guests={[]}
               selectedId={selectedId}
               zoom={zoom}
@@ -294,7 +316,8 @@ export function CoupleLayoutEditor({ venue, initial, guestCount, onSave, onClose
               onMove={move}
               onDrop={(pos) => place(pos)}
               onClickToPlace={(pos) => place(pos)}
-              isDragging={false}
+              isDragging={!!pending}
+              isDraggingExterior={pendingUsesCanvasCoordinates}
               isAdmin
               onViewImage={() => {}}
               panOffset={panOffset}

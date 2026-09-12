@@ -1,8 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Point, Venue } from '../types';
 import { useConfirm } from './useConfirm';
 import { showToast } from './Toast';
 import { useBrandingConfig } from '../config';
+import { polygonValidationIssue } from '../utils/venueGeometry';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface NormalizedPoint {
   x: number; // 0..1
@@ -120,6 +122,9 @@ const shapeToAbsolute = (points: NormalizedPoint[], venue: Venue): Point[] =>
 export const CustomVenueBuilder: React.FC<CustomVenueBuilderProps> = ({ venue, onSave, onClose }) => {
   const { confirm, confirmDialog } = useConfirm();
   const config = useBrandingConfig();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  useFocusTrap(dialogRef, true, undefined, titleRef);
   const [points, setPoints] = useState<NormalizedPoint[]>(normalizePoints(venue));
   // Reference to the shape as loaded, for the "unsaved changes" close guard.
   const initialPointsRef = useRef<NormalizedPoint[]>(normalizePoints(venue));
@@ -200,10 +205,10 @@ export const CustomVenueBuilder: React.FC<CustomVenueBuilderProps> = ({ venue, o
   const workspaceWidth = VIEWBOX_WIDTH - PADDING * 2;
   const workspaceHeight = VIEWBOX_HEIGHT - PADDING * 2;
 
-  const toCanvas = (p: NormalizedPoint) => ({
+  const toCanvas = useCallback((p: NormalizedPoint) => ({
     x: PADDING + p.x * workspaceWidth,
     y: PADDING + p.y * workspaceHeight,
-  });
+  }), [workspaceHeight, workspaceWidth]);
 
   const toNormalized = (clientX: number, clientY: number): NormalizedPoint | null => {
     if (!svgRef.current) return null;
@@ -222,29 +227,19 @@ export const CustomVenueBuilder: React.FC<CustomVenueBuilderProps> = ({ venue, o
     return { x: nx, y: ny };
   };
 
-  const polygonPoints = useMemo(() => points.map((p) => toCanvas(p)), [points]);
+  const polygonPoints = useMemo(() => points.map((p) => toCanvas(p)), [points, toCanvas]);
   const polygonString = polygonPoints.map((p) => `${p.x},${p.y}`).join(' ');
 
   const absolutePoints = useMemo(() => shapeToAbsolute(points, venue), [points, venue]);
 
-  // Basic polygon validity: at least 3 distinct points and a non-zero area.
-  const isValidShape = useMemo(() => {
-    if (points.length < 3) return false;
-    const distinct = new Set(points.map((p) => `${p.x.toFixed(4)},${p.y.toFixed(4)}`));
-    if (distinct.size < 3) return false;
-    // Shoelace area
-    let area = 0;
-    for (let i = 0; i < points.length; i += 1) {
-      const a = points[i];
-      const b = points[(i + 1) % points.length];
-      area += a.x * b.y - b.x * a.y;
-    }
-    return Math.abs(area) > 0.0001;
-  }, [points]);
+  const shapeValidationIssue = useMemo(
+    () => polygonValidationIssue(absolutePoints),
+    [absolutePoints],
+  );
 
   const saveShape = () => {
-    if (!isValidShape) {
-      showToast('The shape needs at least 3 distinct points with a non-zero area before saving.', 'warning');
+    if (shapeValidationIssue) {
+      showToast(shapeValidationIssue, 'warning');
       return;
     }
     initialPointsRef.current = points.map((p) => ({ ...p }));
@@ -316,7 +311,14 @@ export const CustomVenueBuilder: React.FC<CustomVenueBuilderProps> = ({ venue, o
 
   return (
     <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 p-2 sm:p-3">
-      <div className="bg-white rounded-2xl shadow-2xl flex flex-col w-full max-w-[99vw] h-[97vh] overflow-hidden">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="venue-shape-builder-title"
+        tabIndex={-1}
+        className="bg-white rounded-2xl shadow-2xl flex flex-col w-full max-w-[99vw] h-[97vh] overflow-hidden"
+      >
         <div
           className="p-4 border-b border-gray-200 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 text-white"
           style={{
@@ -324,7 +326,7 @@ export const CustomVenueBuilder: React.FC<CustomVenueBuilderProps> = ({ venue, o
           }}
         >
           <div>
-            <h2 className="text-xl font-semibold">✏️ Venue Shape Builder</h2>
+            <h2 id="venue-shape-builder-title" ref={titleRef} tabIndex={-1} className="text-xl font-semibold outline-none">✏️ Venue Shape Builder</h2>
             <p className="text-sm text-white/85">Design a custom venue outline for {venue.name}. Your shape scales automatically with {venue.width}’ × {venue.height}’ dimensions.</p>
           </div>
           <div className="flex items-center gap-2 self-end sm:self-auto">
@@ -337,7 +339,7 @@ export const CustomVenueBuilder: React.FC<CustomVenueBuilderProps> = ({ venue, o
               {sidebarCollapsed ? '☰ Show Controls' : '⇤ Hide Controls'}
             </button>
             <button onClick={resetToRectangle} className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-medium">Reset</button>
-            <button onClick={saveShape} className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium shadow-sm">💾 Save Shape</button>
+            <button onClick={saveShape} className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium shadow-sm">✓ Use Shape in Draft</button>
             <button onClick={requestClose} className="p-2 hover:bg-white/20 rounded-lg transition-colors" aria-label="Close shape builder">✕</button>
           </div>
         </div>
@@ -380,7 +382,7 @@ export const CustomVenueBuilder: React.FC<CustomVenueBuilderProps> = ({ venue, o
                 <button
                   onClick={saveShape}
                   className="w-full px-2 py-2 rounded-lg border border-green-300 bg-green-50 hover:bg-green-100 text-green-700 text-sm"
-                  title="Save shape"
+                  title="Use shape in geometry draft"
                 >
                   💾
                 </button>
@@ -581,7 +583,7 @@ export const CustomVenueBuilder: React.FC<CustomVenueBuilderProps> = ({ venue, o
                   <span>{snapToGrid ? 'Snap on' : 'Freeform'}</span>
                 </div>
                 <div className="text-xs text-gray-500">
-                  Drag points • Click edge to insert • Save to update the venue layout
+                  Drag points • Click edge to insert • Use Shape in Draft when ready
                 </div>
               </div>
               <svg

@@ -17,8 +17,18 @@ vi.mock('../hooks/useLayoutState', () => ({
       seatingRowCount: 2,
       seatingRowSpacing: 3,
     },
+    {
+      id: 'chiavari-table',
+      name: 'Chiavari Table',
+      shape: 'circle',
+      width: 5,
+      height: 5,
+      capacity: 8,
+      defaultChairType: 'chiavari',
+    },
   ],
   getFixtureTypes: () => [],
+  getDecorItems: () => [],
   getLinenColors: () => [
     { id: 'white', name: 'White', hex: '#FFFFFF', textColor: '#374151', enabled: true },
   ],
@@ -27,6 +37,7 @@ vi.mock('../hooks/useLayoutState', () => ({
 vi.mock('../data/venueData', () => ({
   getChairSpecs: () => [
     { id: 'white-plastic', name: 'White Plastic', width: 1.5, depth: 1.5, color: '#ffffff', icon: '🪑' },
+    { id: 'chiavari', name: 'Chiavari', width: 1.5, depth: 1.5, color: '#d4af37', icon: '🪑' },
   ],
 }));
 
@@ -92,6 +103,77 @@ describe('PropertiesPanel seating types', () => {
     expect(onUpdateTable).toHaveBeenCalledWith('t1', {
       chairCount: 5,
       showChairs: true,
+    });
+  });
+
+  it('offers an explicit repair path for a historical missing catalog reference', () => {
+    const onRepair = vi.fn();
+    render(
+      <PropertiesPanel
+        selectedId="legacy"
+        tables={[{
+          id: 'legacy', type: 'table', specId: 'deleted-table', x: 7, y: 9,
+          rotation: 30, label: 'Legacy table', guests: [],
+        }]}
+        fixtures={[]}
+        onUpdateTable={() => undefined}
+        onUpdateFixture={() => undefined}
+        onRemoveItem={() => undefined}
+        onDuplicateItem={() => undefined}
+        onRepairCatalogReference={onRepair}
+        onClose={() => undefined}
+        onViewImage={() => undefined}
+        visible
+        onToggleVisibility={() => undefined}
+        arrangements={[]}
+      />,
+    );
+
+    expect(screen.getByText('Catalog definition is missing')).toBeInTheDocument();
+    expect(screen.getByText(/Missing reference: deleted-table/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Replacement definition'), {
+      target: { value: 'chiavari-table' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Repair catalog reference' }));
+    expect(onRepair).toHaveBeenCalledWith('legacy', 'chiavari-table');
+    expect(screen.getByRole('button', { name: /Duplicate/i })).toBeDisabled();
+  });
+
+  it('restores the table catalog default when chairs are re-enabled from explicit zero', () => {
+    const onUpdateTable = vi.fn();
+    render(
+      <PropertiesPanel
+        selectedId="t1"
+        tables={[{
+          id: 't1',
+          type: 'table',
+          specId: 'chiavari-table',
+          x: 10,
+          y: 10,
+          rotation: 0,
+          label: 'Dinner Table',
+          guests: [],
+          chairType: 'none',
+          chairCount: 0,
+          showChairs: false,
+        }]}
+        fixtures={[]}
+        onUpdateTable={onUpdateTable}
+        onUpdateFixture={() => undefined}
+        onRemoveItem={() => undefined}
+        onDuplicateItem={() => undefined}
+        onClose={() => undefined}
+        onViewImage={() => undefined}
+        visible
+        onToggleVisibility={() => undefined}
+        arrangements={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add one configured chair' }));
+    expect(onUpdateTable).toHaveBeenCalledWith('t1', {
+      chairCount: 1,
+      chairType: 'chiavari',
     });
   });
 });

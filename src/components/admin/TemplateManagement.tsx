@@ -1,11 +1,14 @@
 import { BrandedSectionHeader, BrandedStatCard } from './shared/AdminSharedComponents';
 import { LayoutCategory, LayoutTemplate } from '../../types';
 import type { AdminCommonProps } from './AdminTabTypes';
+import { layoutSeatCount } from '../../utils/layoutSeating';
+import { createEntityId } from '../../utils/entityId';
 
 export function TemplateManagement(props: AdminCommonProps) {
   const {
     config,
     venues,
+    tables: tableSpecs,
     templates,
     confirmAction,
     layoutCategories,
@@ -98,7 +101,7 @@ export function TemplateManagement(props: AdminCommonProps) {
                     <button
                       onClick={() => {
                         const newTemplate: LayoutTemplate = {
-                          id: `template-${Date.now()}`,
+                          id: createEntityId('template', templates.map((template) => template.id)),
                           name: 'New Template',
                           description: 'Template description',
                           venueId: venues[0]?.id || 'pavilion',
@@ -210,7 +213,7 @@ export function TemplateManagement(props: AdminCommonProps) {
                     <button
                       onClick={() => {
                         const newTemplate: LayoutTemplate = {
-                          id: `template-${Date.now()}`,
+                          id: createEntityId('template', templates.map((template) => template.id)),
                           name: 'My First Template',
                           description: 'A new layout template',
                           venueId: venues[0]?.id || 'pavilion',
@@ -345,7 +348,7 @@ export function TemplateManagement(props: AdminCommonProps) {
                             </div>
                             <div className="bg-white p-3 text-center">
                               <div className="text-lg font-bold text-green-600">
-                                {template.tables?.reduce((sum, t) => sum + (t.customCapacity || 10), 0) || 0}
+                                {layoutSeatCount(template.tables || [], tableSpecs, template.ceremonyRows || [])}
                               </div>
                               <div className="text-xs text-gray-500">Seats</div>
                             </div>
@@ -470,7 +473,7 @@ export function TemplateManagement(props: AdminCommonProps) {
                                     // Duplicate template
                                     const duplicated: LayoutTemplate = {
                                       ...template,
-                                      id: `template-${Date.now()}`,
+                                      id: createEntityId('template', templates.map((template) => template.id)),
                                       name: `${template.name} (Copy)`,
                                       isMasterTemplate: false,
                                       createdAt: new Date().toISOString()

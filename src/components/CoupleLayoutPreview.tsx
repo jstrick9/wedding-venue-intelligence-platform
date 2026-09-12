@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { FloorPlanCanvas } from './FloorPlanCanvas';
 import { getTableSpecs } from '../hooks/useLayoutState';
 import { Venue, CoupleSpaceLayout, LayoutReviewPin } from '../types';
+import { layoutSeatCount } from '../utils/layoutSeating';
 
 interface Props {
   venue: Venue;
@@ -33,11 +34,7 @@ export function CoupleLayoutPreview({
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
 
   const tableSpecs = useMemo(() => getTableSpecs(), []);
-  const seatingCapacity = layout.tables.reduce((sum, t) => {
-    const spec = tableSpecs.find((s) => s.id === t.specId);
-    if (!spec) return sum;
-    return sum + (t.customCapacity ?? spec.capacity ?? 0);
-  }, 0);
+  const seatingCapacity = layoutSeatCount(layout.tables, tableSpecs, layout.ceremonyRows || []);
   const capacityShort = guestCount != null && seatingCapacity < guestCount;
 
   const handleSavePin = () => {
@@ -87,6 +84,7 @@ export function CoupleLayoutPreview({
           )}
           <span className="text-gray-400">
             {layout.tables.length} table(s) · {layout.fixtures.length} fixture(s) · {layout.decor.length} decor
+            {(layout.ceremonyRows?.length || 0) > 0 ? ` · ${layout.ceremonyRows!.length} ceremony row(s)` : ''}
           </span>
         </span>
       </div>
@@ -135,6 +133,7 @@ export function CoupleLayoutPreview({
           tables={layout.tables}
           fixtures={layout.fixtures}
           decor={layout.decor}
+          ceremonyRows={layout.ceremonyRows || []}
           guests={[]}
           reviewPins={reviewPins}
           onSelectReviewPin={(pinId) => setSelectedPinId(pinId)}

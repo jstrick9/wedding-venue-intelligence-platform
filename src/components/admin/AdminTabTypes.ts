@@ -16,6 +16,8 @@ import type {
   PatternType,
   PlacedFixture,
   PlacedTable,
+  PlacedDecor,
+  CeremonyChairRow,
   ShapeType,
   TableSpec,
   User,
@@ -43,6 +45,8 @@ export interface AdminDialogOptions {
 export interface AdminCurrentLayout {
   tables: PlacedTable[];
   fixtures: PlacedFixture[];
+  decor?: PlacedDecor[];
+  ceremonyRows?: CeremonyChairRow[];
   venueId: string;
   category?: string;
 }

@@ -1,4 +1,5 @@
 import type { Guest, PlacedTable, RSVPSubmission, TableSpec } from '../types';
+import { tableSeatCount } from './layoutSeating';
 
 /**
  * Pure, testable "event intelligence" metrics for the wedding-event overview.
@@ -51,8 +52,7 @@ export function computeEventDashboard(
     const spec = tableSpecs.find((s) => s.id === t.specId);
     // Seating-type rows are intentionally excluded from "table seats" here.
     if (spec?.isSeatingType) return sum;
-    const cap = t.customCapacity ?? spec?.capacity ?? 0;
-    return sum + cap;
+    return sum + tableSeatCount(t, spec);
   }, 0);
 
   const seatingUtilization = pct(confirmed, totalSeats);

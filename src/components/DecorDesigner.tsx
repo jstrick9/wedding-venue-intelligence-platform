@@ -20,6 +20,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { showToast } from './Toast';
 import { on } from '../utils/appEvents';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { createEntityId } from '../utils/entityId';
 
 interface DecorDesignerProps {
   onClose: () => void;
@@ -46,8 +47,8 @@ export const DecorDesigner: React.FC<DecorDesignerProps> = ({ onClose, onSave, i
   
   const [placedItems, setPlacedItems] = useState<PlacedDecor[]>(() => {
     if (initialArrangement) {
-      return initialArrangement.items.map((item, idx) => ({
-        id: `designer-decor-${Date.now()}-${idx}`,
+      return initialArrangement.items.map((item) => ({
+        id: createEntityId('designer-decor'),
         decorItemId: item.decorItemId,
         x: item.x,
         y: item.y,
@@ -110,8 +111,8 @@ export const DecorDesigner: React.FC<DecorDesignerProps> = ({ onClose, onSave, i
   }, []);
 
   const availableBases = useMemo(() => {
-    const tables = getTableSpecs().filter(s => s.allowAsDecorBase);
-    const fixtures = getFixtureTypes().filter(s => s.allowAsDecorBase && (s.category === 'interior' || s.category === 'both'));
+    const tables = getTableSpecs().filter(s => !s.archived && s.allowAsDecorBase);
+    const fixtures = getFixtureTypes().filter(s => !s.archived && s.allowAsDecorBase && (s.category === 'interior' || s.category === 'both'));
     return { tables, fixtures };
   }, []);
 
@@ -135,6 +136,7 @@ export const DecorDesigner: React.FC<DecorDesignerProps> = ({ onClose, onSave, i
 
   const filteredCatalog = useMemo(() => {
     return decorCatalog.filter(item => {
+      if (item.archived) return false;
       const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = filterCategoryId === 'all' || item.categoryId === filterCategoryId;
       
@@ -205,7 +207,7 @@ export const DecorDesigner: React.FC<DecorDesignerProps> = ({ onClose, onSave, i
     }
 
     const arrangement: DecorArrangement = {
-      id: initialArrangement?.id || `arrangement-${Date.now()}`,
+      id: initialArrangement?.id || createEntityId('arrangement', arrangements.map((item) => item.id)),
       name: trimmedName,
       userId: ownerId, 
       baseType,
@@ -227,7 +229,7 @@ export const DecorDesigner: React.FC<DecorDesignerProps> = ({ onClose, onSave, i
 
   const handleAddItem = (spec: DecorItem) => {
     const newItem: PlacedDecor = {
-      id: `designer-decor-${Date.now()}`,
+      id: createEntityId('designer-decor', placedItems.map((item) => item.id)),
       decorItemId: spec.id,
       x: 0,
       y: 0,
@@ -377,7 +379,7 @@ export const DecorDesigner: React.FC<DecorDesignerProps> = ({ onClose, onSave, i
       const newIds: string[] = [];
       prev.forEach((item) => {
         if (!selectedIds.has(item.id)) return;
-        const id = `designer-decor-${Date.now()}-${additions.length}-${Math.random().toString(36).slice(2, 6)}`;
+        const id = createEntityId('designer-decor', [...prev, ...additions].map((candidate) => candidate.id));
         additions.push({ ...item, id, x: item.x + 6, y: item.y + 6, zIndex: z++ });
         newIds.push(id);
       });
@@ -410,8 +412,8 @@ export const DecorDesigner: React.FC<DecorDesignerProps> = ({ onClose, onSave, i
     setDesignName(arr.name);
     setBaseType(arr.baseType);
     setBaseSpecId(arr.baseSpecId ?? '');
-    setPlacedItems(arr.items.map((item, idx) => ({
-      id: `designer-decor-${Date.now()}-${idx}`,
+    setPlacedItems(arr.items.map((item) => ({
+      id: createEntityId('designer-decor'),
       decorItemId: item.decorItemId,
       x: item.x,
       y: item.y,
@@ -426,7 +428,7 @@ export const DecorDesigner: React.FC<DecorDesignerProps> = ({ onClose, onSave, i
     setShowProperties(false);
     setActiveSidebarTab('catalog');
     showToast(`Loaded "${arr.name}"`, 'info');
-  }, []);
+  }, [setSelectedId]);
 
   const handleDeleteArrangement = useCallback((id: string) => {
     // Non-blocking, in-app confirm (consistent with the rest of the app) rather

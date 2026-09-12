@@ -126,4 +126,21 @@ describe('useFocusTrap', () => {
 
     expect(screen.getByRole('textbox', { name: 'Dialog Input' })).toHaveFocus();
   });
+
+  it('restores the opener when an always-active trap unmounts', async () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'External opener';
+    document.body.appendChild(opener);
+    opener.focus();
+
+    try {
+      const { unmount } = render(<FocusTrapHarness />);
+      expect(await screen.findByRole('button', { name: 'First Button' })).toHaveFocus();
+
+      unmount();
+      expect(opener).toHaveFocus();
+    } finally {
+      opener.remove();
+    }
+  });
 });

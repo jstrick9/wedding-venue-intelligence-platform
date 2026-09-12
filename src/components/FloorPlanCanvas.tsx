@@ -4,6 +4,15 @@ import { getTableSpecs, getFixtureTypes, getLinenColors, getDecorArrangements, g
 import { getChairSpecs, getSpacingSettings } from '../data/venueData';
 import { useBrandingConfig } from '../config';
 import { on } from '../utils/appEvents';
+import {
+  configuredChairCount,
+  layoutSeatCount,
+  seatingGroupGeometry,
+  shouldRenderChairGraphics,
+  tableSeatCount,
+} from '../utils/layoutSeating';
+import { effectiveCanvasGeometry, venueShapePolygon } from '../utils/venueGeometry';
+import { ceremonyChairPlacements } from '../utils/ceremonyRowGeometry';
 
 interface Position {
   x: number;
@@ -27,12 +36,14 @@ export interface FloorPlanCanvasProps {
   gridContrast?: number;
   onSelect: (id: string | null) => void;
   onDoubleClick: (id: string) => void;
-  onMove: (id: string, position: Position, isExterior?: boolean) => void;
+  onMove: (id: string, position: Position, isExterior?: boolean, exact?: boolean) => void;
   onDrop: (position: Position, isExterior?: boolean) => void;
   onClickToPlace: (position: Position, isExterior?: boolean) => void;
   isDragging: boolean;
   isDraggingExterior?: boolean;
   isAdmin: boolean;
+  /** Venue workspaces show configured seats; couple/assignment workspaces retain assigned/available counts. */
+  capacityMode?: 'venue' | 'assignments' | 'hidden';
   onViewImage: (url: string, title: string) => void;
   panOffset: { x: number; y: number };
   onPanChange: (offset: { x: number; y: number }) => void;
@@ -68,6 +79,7 @@ export function FloorPlanCanvas({
   onClickToPlace,
   isDragging,
   isDraggingExterior = false,
+  capacityMode = 'assignments',
   onViewImage,
   panOffset,
   onPanChange,
@@ -138,64 +150,25 @@ export function FloorPlanCanvas({
   }, [tables.length, fixtures.length, decor.length, showOnboardingHint]);
 
   const scale = 8; // pixels per foot
-  
-  const padding = venue.exteriorPadding || { top: 40, right: 30, bottom: 30, left: 40 };
-  const canvasWidth = venue.canvasWidth 
-    ? venue.canvasWidth * scale 
-    : (venue.width + padding.left + padding.right) * scale;
-  const canvasHeight = venue.canvasHeight 
-    ? venue.canvasHeight * scale 
-    : (venue.height + padding.top + padding.bottom) * scale;
-  
-  const venueX = venue.venueX !== undefined 
-    ? venue.venueX * scale 
-    : padding.left * scale;
-  const venueY = venue.venueY !== undefined 
-    ? venue.venueY * scale 
-    : padding.top * scale;
+  const effectiveCanvas = effectiveCanvasGeometry(venue);
+  const canvasWidth = effectiveCanvas.canvasWidth * scale;
+  const canvasHeight = effectiveCanvas.canvasHeight * scale;
+  const venueX = effectiveCanvas.venueX * scale;
+  const venueY = effectiveCanvas.venueY * scale;
   const venueWidth = venue.width * scale;
   const venueHeight = venue.height * scale;
 
-  const customVenueShape = useMemo(() => {
-    if (venue.shape !== 'custom' || !venue.shapePoints || venue.shapePoints.length < 3) {
-      return null;
-    }
-
-    const abs = venue.shapePoints.map((p) => ({
-      x: venueX + p.x * scale,
-      y: venueY + p.y * scale,
-    }));
-
-    const minX = Math.min(...abs.map((p) => p.x));
-    const minY = Math.min(...abs.map((p) => p.y));
-    const maxX = Math.max(...abs.map((p) => p.x));
-    const maxY = Math.max(...abs.map((p) => p.y));
-    const path = `M ${abs.map((p, i) => `${i === 0 ? '' : 'L '}${p.x} ${p.y}`).join(' ')} Z`;
-
-    return {
-      path,
-      minX,
-      minY,
-      maxX,
-      maxY,
-      width: maxX - minX,
-      height: maxY - minY,
-      centerX: (minX + maxX) / 2,
-      centerY: (minY + maxY) / 2,
-    };
-  }, [venue, venueX, venueY, scale]);
-
-  const customVenueBounds = customVenueShape || {
-    minX: venueX,
-    minY: venueY,
-    maxX: venueX + venueWidth,
-    maxY: venueY + venueHeight,
-    width: venueWidth,
-    height: venueHeight,
-    centerX: venueX + venueWidth / 2,
-    centerY: venueY + venueHeight / 2,
-  };
-  void customVenueBounds;
+  // One canonical outline drives both rendering and collision validation.
+  const venueBoundaryPoints = useMemo(
+    () => venueShapePolygon(venue).map((point) => ({
+      x: venueX + point.x * scale,
+      y: venueY + point.y * scale,
+    })),
+    [venue, venueX, venueY, scale],
+  );
+  const venueBoundaryString = venueBoundaryPoints
+    .map((point) => `${point.x},${point.y}`)
+    .join(' ');
 
   const getLinenColorInfo = useCallback((colorId?: string) => {
     const defaultColor = { id: 'white', name: 'White', hex: '#FFFFFF', textColor: '#374151' };
@@ -243,18 +216,25 @@ export function FloorPlanCanvas({
     // So relative coords in inches need to be multiplied by (8/12).
     const designScale = 8 / 12; 
 
-    return [...arrangement.items].sort((a: any, b: any) => a.zIndex - b.zIndex).map((item: any, idx: number) => {
+    return [...arrangement.items]
+      .sort((a: any, b: any) => (Number.isFinite(a.zIndex) ? a.zIndex : 0) - (Number.isFinite(b.zIndex) ? b.zIndex : 0))
+      .map((item: any, idx: number) => {
       const spec = decorCatalog.find(s => s.id === item.decorItemId);
       if (!spec) return null;
 
-      const w = (spec.width * 12 + (spec.widthInches || 0)) * item.scaleX * designScale;
-      const h = (spec.height * 12 + (spec.heightInches || 0)) * item.scaleY * designScale;
+      const scaleX = Math.abs(Number.isFinite(item.scaleX) ? item.scaleX : 1);
+      const scaleY = Math.abs(Number.isFinite(item.scaleY) ? item.scaleY : 1);
+      const itemX = Number.isFinite(item.x) ? item.x : 0;
+      const itemY = Number.isFinite(item.y) ? item.y : 0;
+      const rotation = Number.isFinite(item.rotation) ? item.rotation : 0;
+      const w = (spec.width * 12 + (spec.widthInches || 0)) * scaleX * designScale;
+      const h = (spec.height * 12 + (spec.heightInches || 0)) * scaleY * designScale;
       
-      const ix = centerX + item.x * designScale - w / 2;
-      const iy = centerY + item.y * designScale - h / 2;
+      const ix = centerX + itemX * designScale - w / 2;
+      const iy = centerY + itemY * designScale - h / 2;
 
       return (
-        <g key={`${arrangementId}-${idx}`} transform={`rotate(${item.rotation}, ${ix + w/2}, ${iy + h/2})`}>
+        <g key={`${arrangementId}-${idx}`} transform={`rotate(${rotation}, ${ix + w/2}, ${iy + h/2})`}>
           {spec.imageUrl || (spec.images && spec.images.length > 0) ? (
             <image href={spec.imageUrl || spec.images?.[0]?.url} x={ix} y={iy} width={w} height={h} />
           ) : (
@@ -272,8 +252,11 @@ export function FloorPlanCanvas({
 
     const x = d.parentType === 'canvas' ? d.x * scale : venueX + d.x * scale;
     const y = d.parentType === 'canvas' ? d.y * scale : venueY + d.y * scale;
-    const w = (spec.width * 12 + (spec.widthInches || 0)) / 12 * scale * d.scaleX;
-    const h = (spec.height * 12 + (spec.heightInches || 0)) / 12 * scale * d.scaleY;
+    const scaleX = Math.abs(Number.isFinite(d.scaleX) ? d.scaleX : 1);
+    const scaleY = Math.abs(Number.isFinite(d.scaleY) ? d.scaleY : 1);
+    const w = (spec.width * 12 + (spec.widthInches || 0)) / 12 * scale * scaleX;
+    const h = (spec.height * 12 + (spec.heightInches || 0)) / 12 * scale * scaleY;
+    const rotation = Number.isFinite(d.rotation) ? d.rotation : 0;
     const isSelected = selectedId === d.id;
 
     // Use image if available, fallback to icon/color
@@ -281,13 +264,19 @@ export function FloorPlanCanvas({
       <g
         key={d.id}
         className="cursor-move"
-        transform={`rotate(${d.rotation}, ${x + w / 2}, ${y + h / 2})`}
-        onPointerDown={(e) => handleItemPointerDown(e, d.id, d.x, d.y, d.parentType === "canvas")}
+        transform={`rotate(${rotation}, ${x + w / 2}, ${y + h / 2})`}
+        role="button"
+        tabIndex={0}
+        aria-label={`${spec.name}, decor item`}
+        aria-pressed={isSelected}
+        onPointerDown={(e) => handleItemPointerDown(e, d.id, d.x, d.y, d.parentType === 'canvas')}
+        onDoubleClick={(e) => handleItemDoubleClick(e, d.id, spec.imageUrl, spec.name)}
+        onKeyDown={(e) => handleItemKeyDown(e, d.id, d.x, d.y, d.parentType === 'canvas')}
         onClick={(e) => {
           e.stopPropagation();
           onSelect(d.id);
         }}
-        opacity={d.opacity}
+        opacity={d.opacity ?? 1}
       >
         {spec.imageUrl || (spec.images && spec.images.length > 0) ? (
           <image
@@ -508,91 +497,31 @@ export function FloorPlanCanvas({
     return positions.slice(0, chairCount);
   }, [chairSpecs, scale]);
 
-  // Render ceremony chair row
+  // Render ceremony chair rows from the same feet-based geometry used by the
+  // impact report. This preserves legacy template rows without introducing a
+  // second capacity model for new table-based seating groups.
   const renderCeremonyChairRow = useCallback((row: CeremonyChairRow, index: number) => {
-    const chairSpec = chairSpecs.find(c => c.id === row.chairType) || chairSpecs[0];
+    const chairSpec = chairSpecs.find((candidate) => candidate.id === row.chairType) || chairSpecs[0];
     if (!chairSpec || row.chairType === 'none') return null;
-    
-    const chairSize = chairSpec.width * scale;
+    const placements = ceremonyChairPlacements(row, chairSpec.width);
     const rowX = venueX + row.x * scale;
     const rowY = venueY + row.y * scale;
-    const spacing = row.spacing * scale;
-    
-    const chairs: React.ReactElement[] = [];
-    
-    for (let i = 0; i < row.chairCount; i++) {
-      let chairX: number;
-      let chairY: number;
-      let chairRotation: number;
-      
-      if (row.rowStyle === 'straight') {
-        const totalWidth = (row.chairCount - 1) * spacing;
-        chairX = rowX - totalWidth / 2 + i * spacing - chairSize / 2;
-        chairY = rowY - chairSize / 2;
-        chairRotation = row.facingDirection;
-      } else if (row.rowStyle === 'curved' || row.rowStyle === 'semicircle') {
-        const curveRadius = row.curveRadius || 20 * scale;
-        const angleSpan = Math.PI * 0.6;
-        const startAngle = Math.PI / 2 - angleSpan / 2;
-        const angle = startAngle + (i / (row.chairCount - 1 || 1)) * angleSpan;
-        chairX = rowX + Math.cos(angle) * curveRadius - chairSize / 2;
-        chairY = rowY + Math.sin(angle) * curveRadius - chairSize / 2;
-        chairRotation = angle * 180 / Math.PI - 90 + row.facingDirection;
-      } else if (row.rowStyle === 'diagonal-left' || row.rowStyle === 'diagonal-right') {
-        const diagonalAngle = (row.rowStyle === 'diagonal-left' ? -15 : 15) * Math.PI / 180;
-        chairX = rowX + i * spacing * Math.cos(diagonalAngle) - chairSize / 2;
-        chairY = rowY + i * spacing * Math.sin(diagonalAngle) - chairSize / 2;
-        chairRotation = row.facingDirection;
-      } else if (row.rowStyle === 'stadium') {
-        const rowDepth = 2 * scale;
-        const curve = Math.abs(i - (row.chairCount - 1) / 2) / ((row.chairCount - 1) / 2);
-        chairX = rowX + i * spacing - chairSize / 2;
-        chairY = rowY + curve * rowDepth - chairSize / 2;
-        chairRotation = row.facingDirection;
-      } else {
-        const totalWidth = (row.chairCount - 1) * spacing;
-        chairX = rowX - totalWidth / 2 + i * spacing - chairSize / 2;
-        chairY = rowY - chairSize / 2;
-        chairRotation = row.facingDirection;
-      }
-      
-      chairs.push(
-        <g key={`ceremony-chair-${index}-${i}`} transform={`rotate(${chairRotation}, ${chairX + chairSize/2}, ${chairY + chairSize/2})`}>
-          <rect
-            x={chairX}
-            y={chairY}
-            width={chairSize}
-            height={chairSize}
-            fill={chairSpec.color || '#F5F5DC'}
-            stroke="#8B7355"
-            strokeWidth={1}
-            rx={2}
-          />
-          <rect
-            x={chairX + 1}
-            y={chairY + 1}
-            width={chairSize - 2}
-            height={chairSize * 0.3}
-            fill={chairSpec.color || '#F5F5DC'}
-            stroke="#8B7355"
-            strokeWidth={0.5}
-            rx={1}
-          />
-        </g>
-      );
-    }
-    
+
     return (
-      <g key={`ceremony-row-${index}`}>
-        {chairs}
+      <g key={`ceremony-row-${index}`} data-ceremony-row-id={row.id}>
+        {placements.map((chair, chairIndex) => {
+          const x = venueX + chair.x * scale;
+          const y = venueY + chair.y * scale;
+          const size = chair.size * scale;
+          return (
+            <g key={`ceremony-chair-${index}-${chairIndex}`} transform={`rotate(${chair.rotation}, ${x + size / 2}, ${y + size / 2})`}>
+              <rect x={x} y={y} width={size} height={size} fill={chairSpec.color || '#F5F5DC'} stroke="#8B7355" strokeWidth={1} rx={2} />
+              <rect x={x + 1} y={y + 1} width={Math.max(0, size - 2)} height={size * 0.3} fill={chairSpec.color || '#F5F5DC'} stroke="#8B7355" strokeWidth={0.5} rx={1} />
+            </g>
+          );
+        })}
         {row.label && (
-          <text
-            x={rowX}
-            y={rowY - chairSize - 5}
-            textAnchor="middle"
-            fontSize="10"
-            fill="#374151"
-          >
+          <text x={rowX} y={rowY - chairSpec.width * scale - 5} textAnchor="middle" fontSize="10" fill="#374151">
             {row.label}
           </text>
         )}
@@ -750,7 +679,7 @@ export function FloorPlanCanvas({
     const occupiedIndicatorColor = config.primaryColor || '#4A1942'; // Brand color for occupied
     
     return (
-      <g transform={`rotate(${rotation}, ${x + size/2}, ${y + size/2})`}>
+      <g data-layout-chair="true" aria-hidden="true" transform={`rotate(${rotation}, ${x + size/2}, ${y + size/2})`}>
         {/* Chair seat */}
         <rect
           x={x}
@@ -896,7 +825,7 @@ export function FloorPlanCanvas({
     // Each arrow-key nudge is a discrete action, so snapshot before it so the
     // user can undo one nudge at a time.
     onDragStart?.();
-    onMove(id, { x: Math.max(0, itemX + dx), y: Math.max(0, itemY + dy) }, isExterior);
+    onMove(id, { x: Math.max(0, itemX + dx), y: Math.max(0, itemY + dy) }, isExterior, true);
   };
 
   // Handle canvas click for placing items
@@ -1121,12 +1050,18 @@ export function FloorPlanCanvas({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     try {
-      const data = e.dataTransfer.getData('application/json');
+      const data = e.dataTransfer.getData('application/json')
+        || e.dataTransfer.getData('text/plain');
       if (data) {
-        const parsed = JSON.parse(data);
-        const isExterior = parsed.isExterior || false;
-        const position = screenToVenue(e.clientX, e.clientY, isExterior);
-        onDrop(position, isExterior);
+        const parsed = JSON.parse(data) as { type?: string; isExterior?: boolean } | null;
+        if (!parsed || typeof parsed !== 'object') return;
+        // Saved arrangements can target either venue-local or canvas-anchored
+        // bases, so preserve raw canvas coordinates and let the caller derive both.
+        const usesCanvasCoordinates = isDraggingExterior
+          || !!parsed.isExterior
+          || parsed.type === 'arrangement';
+        const position = screenToVenue(e.clientX, e.clientY, usesCanvasCoordinates);
+        onDrop(position, usesCanvasCoordinates);
       }
     } catch (err) {
       console.error('Drop error:', err);
@@ -1309,40 +1244,17 @@ export function FloorPlanCanvas({
           const stroke = venue.showBorder !== false ? (venue.borderColor || config.primaryColor) : 'transparent';
           const strokeWidth = venue.showBorder !== false ? (venue.borderWidth || 3) : 0;
           
-          if (venue.shape === 'l-shape') {
-            const thickX = venueWidth * 0.4;
-            const thickY = venueHeight * 0.4;
+          if (['l-shape', 't-shape', 'u-shape', 'custom'].includes(venue.shape || 'rectangle')) {
             return (
               <polygon
-                points={`${venueX},${venueY} ${venueX + thickX},${venueY} ${venueX + thickX},${venueY + venueHeight - thickY} ${venueX + venueWidth},${venueY + venueHeight - thickY} ${venueX + venueWidth},${venueY + venueHeight} ${venueX},${venueY + venueHeight}`}
-                fill={fill} stroke={stroke} strokeWidth={strokeWidth}
+                points={venueBoundaryString}
+                fill={fill}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
               />
-            );
-          } else if (venue.shape === 't-shape') {
-            const thickX = venueWidth * 0.4;
-            const thickY = venueHeight * 0.4;
-            const startX = venueX + (venueWidth - thickX) / 2;
-            return (
-              <polygon
-                points={`${venueX},${venueY} ${venueX + venueWidth},${venueY} ${venueX + venueWidth},${venueY + thickY} ${startX + thickX},${venueY + thickY} ${startX + thickX},${venueY + venueHeight} ${startX},${venueY + venueHeight} ${startX},${venueY + thickY} ${venueX},${venueY + thickY}`}
-                fill={fill} stroke={stroke} strokeWidth={strokeWidth}
-              />
-            );
-          } else if (venue.shape === 'u-shape') {
-            const thickX = venueWidth * 0.3;
-            const thickY = venueHeight * 0.4;
-            return (
-              <polygon
-                points={`${venueX},${venueY} ${venueX + thickX},${venueY} ${venueX + thickX},${venueY + venueHeight - thickY} ${venueX + venueWidth - thickX},${venueY + venueHeight - thickY} ${venueX + venueWidth - thickX},${venueY} ${venueX + venueWidth},${venueY} ${venueX + venueWidth},${venueY + venueHeight} ${venueX},${venueY + venueHeight}`}
-                fill={fill} stroke={stroke} strokeWidth={strokeWidth}
-              />
-            );
-          } else if (venue.shape === 'custom' && (customVenueShape?.path || venue.customPath)) {
-            return (
-              <path d={customVenueShape?.path || venue.customPath} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
             );
           }
-          
+
           // Default Rectangle
           return (
             <rect
@@ -1417,7 +1329,7 @@ export function FloorPlanCanvas({
         {decor.map(d => renderDecor(d))}
 
         {/* Fixtures (exterior first, then interior) */}
-        {fixtures
+        {[...fixtures]
           .sort((a, b) => (a.isExterior ? -1 : 1) - (b.isExterior ? -1 : 1))
           .map(fixture => {
             const spec = fixtureTypes.find(s => s.id === fixture.specId);
@@ -1558,29 +1470,14 @@ export function FloorPlanCanvas({
           const isSelected = selectedId === table.id;
           const isSeatingOnly = !!spec.isSeatingType;
           const chairType = table.chairType || spec.defaultChairType || 'white-plastic';
-          const chairCount = Math.max(1, table.chairCount ?? table.customCapacity ?? spec.capacity);
+          const chairCount = configuredChairCount(table, spec);
           const chairSpec = chairSpecs.find(c => c.id === chairType);
 
-          // Seating types are chair-only rows: dimensions are derived from chair type + chair count.
-          const seatingLayout = (() => {
-            if (!isSeatingOnly) return null;
-            const chairWidthFt = chairSpec?.width || 1.5;
-            const chairDepthFt = chairSpec?.depth || chairSpec?.width || 1.5;
-            const rowCount = Math.max(1, spec.seatingRowCount || 1);
-            const rowSpacingFt = Math.max(0.5, spec.seatingRowSpacing || 3);
-            const chairGapFt = Math.max(0.2, chairWidthFt * 0.15);
-            const rowWidthFt = (chairCount * chairWidthFt) + Math.max(0, chairCount - 1) * chairGapFt;
-            const rowDepthFt = (rowCount * chairDepthFt) + Math.max(0, rowCount - 1) * rowSpacingFt;
-            return {
-              rowCount,
-              rowSpacingFt,
-              chairWidthFt,
-              chairDepthFt,
-              chairGapFt,
-              rowWidthFt,
-              rowDepthFt,
-            };
-          })();
+          // Seating types are chair-only rows: dimensions are shared with the
+          // collision engine so the visible and validated footprints stay equal.
+          const seatingLayout = isSeatingOnly
+            ? seatingGroupGeometry(chairCount, spec, chairSpec)
+            : null;
 
           const w = isSeatingOnly && seatingLayout
             ? Math.max(1, seatingLayout.rowWidthFt) * scale
@@ -1600,68 +1497,29 @@ export function FloorPlanCanvas({
             textColor = linenInfo.textColor || '#374151';
           }
           
-          // Chair rendering
-          const showChairs = table.showChairs !== false;
+          // Chair rendering. An explicit zero always renders zero chairs; hiding
+          // graphics remains a visual-only choice and does not alter seat totals.
+          const showChairs = shouldRenderChairGraphics(table, spec);
           const chairPositions = showChairs && chairSpec && chairType !== 'none'
             ? (isSeatingOnly
-                ? (() => {
-                    const chairWidthPx = chairSpec.width * scale;
-                    const chairDepthPx = (chairSpec.depth || chairSpec.width) * scale;
-                    const count = chairCount;
-                    const style = spec.seatingStyle || 'straight-row';
-                    const rowCount = seatingLayout?.rowCount || 1;
-                    const rowSpacingPx = Math.max(1, (seatingLayout?.rowSpacingFt || 3) * scale);
-                    const chairGapPx = Math.max(1, (seatingLayout?.chairGapFt || 0.2) * scale);
-                    const rowPitchPx = chairDepthPx + rowSpacingPx;
-                    const positions: { x: number; y: number; rotation: number }[] = [];
-
-                    const rowStartX = x;
-                    const rowCenterX = x + w / 2;
-                    const rowStartY = y;
-
-                    for (let row = 0; row < rowCount; row++) {
-                      const rowY = rowStartY + row * rowPitchPx;
-
-                      if (style === 'curved-row' || style === 'semicircle-row') {
-                        const span = style === 'semicircle-row' ? Math.PI : Math.PI * 0.75;
-                        const start = Math.PI / 2 - span / 2;
-                        const radius = Math.max(w / 2, 24) + row * (rowSpacingPx * 0.6);
-                        const centerY = rowY + chairDepthPx;
-                        for (let i = 0; i < count; i++) {
-                          const t = count === 1 ? 0.5 : i / (count - 1);
-                          const a = start + t * span;
-                          positions.push({
-                            x: rowCenterX + Math.cos(a) * radius - chairWidthPx / 2,
-                            y: centerY + Math.sin(a) * radius - chairDepthPx / 2,
-                            rotation: (a * 180) / Math.PI + 90,
-                          });
-                        }
-                        continue;
-                      }
-
-                      const totalWidth = (count * chairWidthPx) + Math.max(0, count - 1) * chairGapPx;
-                      const offsetX = rowStartX + Math.max(0, (w - totalWidth) / 2);
-                      for (let i = 0; i < count; i++) {
-                        const curveOffset = style === 'stadium' ? Math.abs(i - (count - 1) / 2) * 1.2 : 0;
-                        positions.push({
-                          x: offsetX + i * (chairWidthPx + chairGapPx),
-                          y: rowY + curveOffset,
-                          rotation: 180,
-                        });
-                      }
-                    }
-                    return positions;
-                  })()
+                ? (seatingLayout?.chairs || []).map((chair) => ({
+                    x: x + chair.x * scale,
+                    y: y + chair.y * scale,
+                    rotation: chair.rotation,
+                  }))
                 : calculateChairPositions(x, y, w, h, chairCount, spec.shape, chairType, table.chairLayout))
             : [];
 
           // Get assigned guests
           const assignedGuests = guests.filter(g => g.tableId === table.id);
-          const seatingRows = isSeatingOnly ? (seatingLayout?.rowCount || 1) : 1;
-          const totalSeatCapacity = isSeatingOnly ? chairCount * seatingRows : chairCount;
-          const seatDisplay = assignedGuests.length > 0 
-            ? `${assignedGuests.length}/${totalSeatCapacity}` 
-            : `🪑 ${totalSeatCapacity}`;
+          const totalSeatCapacity = tableSeatCount(table, spec);
+          const seatDisplay = capacityMode === 'hidden'
+            ? ''
+            : capacityMode === 'venue'
+              ? `${totalSeatCapacity} seat${totalSeatCapacity === 1 ? '' : 's'}`
+              : totalSeatCapacity === 0
+                ? '0/0'
+                : `${assignedGuests.length}/${totalSeatCapacity}`;
 
                 // Calculate rotation center point for the table (and its chairs)
                 const tableCenterX = x + w / 2;
@@ -1777,17 +1635,19 @@ export function FloorPlanCanvas({
               )}
               
               {/* Seat count */}
-              <text
-                x={x + w / 2}
-                y={y + h / 2 + 8}
-                textAnchor="middle"
-                fontSize={Math.max(7, fontSize - 2)}
-                fill={table.appliedArrangementId ? config.primaryColor : textColor}
-                fontWeight={table.appliedArrangementId ? "bold" : "normal"}
-                opacity={table.appliedArrangementId ? 1 : 0.8}
-              >
-                {seatDisplay}
-              </text>
+              {capacityMode !== 'hidden' && (
+                <text
+                  x={x + w / 2}
+                  y={y + h / 2 + 8}
+                  textAnchor="middle"
+                  fontSize={Math.max(7, fontSize - 2)}
+                  fill={table.appliedArrangementId ? config.primaryColor : textColor}
+                  fontWeight={table.appliedArrangementId ? 'bold' : 'normal'}
+                  opacity={table.appliedArrangementId ? 1 : 0.8}
+                >
+                  {seatDisplay}
+                </text>
+              )}
               
               {/* Selection indicator */}
               {isSelected && (
@@ -1822,8 +1682,15 @@ export function FloorPlanCanvas({
                   transform={`translate(${absX}, ${absY})`}
                   className="cursor-pointer"
                   role="button"
+                  tabIndex={0}
                   aria-label={`Review Pin ${i + 1}: ${pin.comment}`}
                   onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectReviewPin?.(pin.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
                     e.stopPropagation();
                     onSelectReviewPin?.(pin.id);
                   }}
@@ -1849,19 +1716,21 @@ export function FloorPlanCanvas({
           </g>
         )}
 
-        {/* Capacity indicator */}
-        <g transform={`translate(${canvasWidth - 160}, ${canvasHeight - 30})`}>
-          <rect x="0" y="0" width="155" height="25" fill="white" stroke="#ccc" strokeWidth={1} rx={4} opacity={0.95} />
-          <text x="10" y="17" fontSize="11" fill="#374151">
-            👥 {guests.filter(g => g.tableId).length} / {tables.reduce((sum, t) => {
-              const spec = tableSpecs.find(s => s.id === t.specId);
-              const isSeating = !!spec?.isSeatingType;
-              const perRow = t.chairCount ?? t.customCapacity ?? spec?.capacity ?? 0;
-              const rows = isSeating ? Math.max(1, spec?.seatingRowCount || 1) : 1;
-              return sum + (isSeating ? perRow * rows : (t.customCapacity || spec?.capacity || 0));
-            }, 0)} seated • Max: {venue.capacity}
-          </text>
-        </g>
+        {/* Persona-aware capacity indicator. Venue admins need configured setup
+            seats; assignment ratios remain available to couple-facing consumers. */}
+        {capacityMode !== 'hidden' && (() => {
+          const configuredSeats = layoutSeatCount(tables, tableSpecs, ceremonyRows);
+          const assignedSeats = guests.filter((guest) => guest.tableId).length;
+          const label = capacityMode === 'venue'
+            ? `🪑 ${configuredSeats} seats • Max: ${venue.capacity}`
+            : `👥 ${assignedSeats} / ${configuredSeats} seated • Max: ${venue.capacity}`;
+          return (
+            <g transform={`translate(${canvasWidth - 205}, ${canvasHeight - 30})`}>
+              <rect x="0" y="0" width="200" height="25" fill="white" stroke="#ccc" strokeWidth={1} rx={4} opacity={0.95} />
+              <text x="10" y="17" fontSize="11" fill="#374151">{label}</text>
+            </g>
+          );
+        })()}
       </svg>
 
       {/* Empty-state onboarding hint: shown only the first time when the canvas has no items yet, auto-dismissing after 2-3 seconds. */}

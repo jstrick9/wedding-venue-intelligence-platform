@@ -109,9 +109,40 @@ describe('Sidebar cross-role visibility for category-restricted items', () => {
     expect(screen.getByText('Reception Table')).toBeInTheDocument();
     expect(screen.queryByText('Ceremony Table')).not.toBeInTheDocument();
 
-    await user.click(screen.getByTitle('Venue'));
+    await user.click(screen.getByTitle('Venue Items'));
     expect(screen.getByText('Reception Fixture')).toBeInTheDocument();
     expect(screen.queryByText('Hidden Fixture')).not.toBeInTheDocument();
+  });
+
+  it('hides archived definitions from new placement even for venue admins', async () => {
+    const user = userEvent.setup();
+    setTableSpecs([
+      {
+        id: 'active-table', name: 'Active Table', shape: 'rectangle',
+        width: 6, height: 6, capacity: 8,
+      } as any,
+      {
+        id: 'archived-table', name: 'Archived Table', shape: 'rectangle',
+        width: 6, height: 6, capacity: 8, archived: true,
+      } as any,
+    ]);
+    setFixtureTypes([
+      {
+        id: 'archived-fixture', name: 'Archived Fixture', category: 'interior',
+        shape: 'rectangle', width: 4, height: 4, archived: true,
+      } as any,
+    ]);
+
+    renderSidebar(
+      { id: 'admin', role: 'admin', name: 'Admin', isActive: true },
+      true,
+      'reception',
+    );
+
+    expect(screen.getByText('Active Table')).toBeInTheDocument();
+    expect(screen.queryByText('Archived Table')).not.toBeInTheDocument();
+    await user.click(screen.getByTitle('Venue Items'));
+    expect(screen.queryByText('Archived Fixture')).not.toBeInTheDocument();
   });
 
   it('admin sees all category-restricted items regardless of current venue category', async () => {
@@ -183,7 +214,7 @@ describe('Sidebar cross-role visibility for category-restricted items', () => {
     expect(screen.getByText('Reception Table')).toBeInTheDocument();
     expect(screen.getByText('Ceremony Table')).toBeInTheDocument();
 
-    await user.click(screen.getByTitle('Venue'));
+    await user.click(screen.getByTitle('Venue Items'));
     expect(screen.getByText('Reception Fixture')).toBeInTheDocument();
     expect(screen.getByText('Hidden Fixture')).toBeInTheDocument();
   });

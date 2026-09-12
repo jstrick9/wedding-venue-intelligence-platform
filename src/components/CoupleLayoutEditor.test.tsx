@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 vi.mock('../hooks/useLayoutState', () => ({
   getTableSpecs: () => [
@@ -34,6 +34,18 @@ describe('CoupleLayoutEditor', () => {
     expect(screen.getByText(/Dance Floor/i)).toBeTruthy();
   });
 
+  it('places a palette item with the documented pick-then-canvas flow', () => {
+    const onSave = vi.fn();
+    const { container } = render(
+      <CoupleLayoutEditor venue={venue} initial={null} onSave={onSave} onClose={() => {}} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Round Table (6×6)' }));
+    fireEvent.click(container.querySelector('svg')!, { clientX: 80, clientY: 80 });
+    expect(screen.getByText(/1 item\(s\)/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /save layout/i }));
+    expect(onSave.mock.calls[0][0].tables).toHaveLength(1);
+  });
+
   it('shows saved item counts in the toolbar', () => {
     render(
       <CoupleLayoutEditor
@@ -49,6 +61,32 @@ describe('CoupleLayoutEditor', () => {
       />,
     );
     expect(screen.getByText(/1 item\(s\)/i)).toBeTruthy();
+  });
+
+  it('renders, counts, and preserves legacy ceremony rows when saving', () => {
+    const onSave = vi.fn();
+    const ceremonyRow = {
+      id: 'row-1', x: 20, y: 20, rotation: 0, label: 'Ceremony Row',
+      chairType: 'white-plastic', chairCount: 6, spacing: 2, rowWidth: 12,
+      rowStyle: 'straight', facingDirection: 0,
+    } as const;
+    render(
+      <CoupleLayoutEditor
+        venue={venue}
+        guestCount={6}
+        initial={{
+          tables: [], fixtures: [], decor: [], ceremonyRows: [ceremonyRow],
+          updatedAt: new Date().toISOString(),
+        }}
+        onSave={onSave}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/1 item\(s\)/i)).toBeTruthy();
+    expect(screen.getByText(/Seats 6 \/ 6 guests/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /save layout/i }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ ceremonyRows: [ceremonyRow] }));
   });
 
   it('warns when placed seating capacity is below the expected guest count', () => {

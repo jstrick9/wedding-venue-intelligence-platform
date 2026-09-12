@@ -6,27 +6,23 @@ export type ToastType = 'success' | 'error' | 'warning' | 'info';
 interface ToastProps {
   message: string;
   type?: ToastType;
-  duration?: number;
+  dismissible?: boolean;
   onClose: () => void;
+}
+
+export interface ToastOptions {
+  /** Milliseconds the visible notification remains mounted. */
+  duration?: number;
+  /** Whether a manual close control is shown. Auto-dismiss still applies. */
+  dismissible?: boolean;
 }
 
 export function Toast({
   message,
   type = 'info',
-  duration = 3000,
+  dismissible = true,
   onClose,
 }: ToastProps) {
-  const [isVisible, setIsVisible] = useState(true);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsVisible(false);
-      setTimeout(onClose, 300);
-    }, duration);
-
-    return () => clearTimeout(timer);
-  }, [duration, onClose]);
-
   const icons = {
     success: '✓',
     error: '✕',
@@ -48,23 +44,21 @@ export function Toast({
       className={`
         ${colors[type]}
         text-white px-4 py-3 rounded-lg shadow-lg
-        flex items-center transition-all duration-300
-        ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'}
+        flex items-center
       `}
     >
       <span className="font-semibold mr-2">{icons[type]}</span>
       <span className="flex-1">{message}</span>
-      <button
-        onClick={() => {
-          setIsVisible(false);
-          setTimeout(onClose, 300);
-        }}
-        className="ml-2 hover:bg-white/20 rounded-full p-1 transition-colors"
-        aria-label="Close notification"
-        type="button"
-      >
-        ✕
-      </button>
+      {dismissible && (
+        <button
+          onClick={onClose}
+          className="ml-2 hover:bg-white/20 rounded-full p-1 transition-colors"
+          aria-label="Dismiss notification"
+          type="button"
+        >
+          ✕
+        </button>
+      )}
     </div>
   );
 }
@@ -75,21 +69,38 @@ interface ToastItem {
   message: string;
   type: ToastType;
   createdAt: number;
+  duration: number;
+  dismissible: boolean;
 }
 
 let toastId = 0;
 const TOAST_DEDUPE_MS = 1200;
 let toastListeners: Array<(toasts: ToastItem[]) => void> = [];
 let currentToasts: ToastItem[] = [];
+const toastTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Cleanup function for module unload
+function scheduleRemoval(id: string, duration: number) {
+  const existing = toastTimers.get(id);
+  if (existing) clearTimeout(existing);
+  toastTimers.set(id, setTimeout(() => removeToast(id), duration));
+}
+
+// Cleanup function for tests/module unload.
 export function cleanupToastListeners(): void {
   toastListeners = [];
   currentToasts = [];
+  toastTimers.forEach((timer) => clearTimeout(timer));
+  toastTimers.clear();
 }
 
-export function showToast(message: string, type: ToastType = 'info') {
+export function showToast(
+  message: string,
+  type: ToastType = 'info',
+  options: ToastOptions = {},
+) {
   const now = Date.now();
+  const duration = Math.max(0, options.duration ?? 3500);
+  const dismissible = options.dismissible ?? true;
 
   const duplicate = currentToasts.find(
     (toast) =>
@@ -99,21 +110,36 @@ export function showToast(message: string, type: ToastType = 'info') {
   );
 
   if (duplicate) {
-    return;
+    currentToasts = currentToasts.map((toast) => toast.id === duplicate.id
+      ? { ...toast, createdAt: now, duration, dismissible }
+      : toast);
+    toastListeners.forEach((listener) => listener(currentToasts));
+    scheduleRemoval(duplicate.id, duration);
+    announce(message);
+    return duplicate.id;
   }
 
   const id = String(++toastId);
-  const newToast: ToastItem = { id, message, type, createdAt: now };
+  const newToast: ToastItem = {
+    id,
+    message,
+    type,
+    createdAt: now,
+    duration,
+    dismissible,
+  };
   currentToasts = [...currentToasts, newToast];
   toastListeners.forEach((listener) => listener(currentToasts));
   announce(message);
 
-  setTimeout(() => {
-    removeToast(id);
-  }, 3500);
+  scheduleRemoval(id, duration);
+  return id;
 }
 
 function removeToast(id: string) {
+  const timer = toastTimers.get(id);
+  if (timer) clearTimeout(timer);
+  toastTimers.delete(id);
   currentToasts = currentToasts.filter((t) => t.id !== id);
   toastListeners.forEach((listener) => listener(currentToasts));
 }
@@ -145,6 +171,7 @@ export function ToastContainer() {
           key={toast.id}
           message={toast.message}
           type={toast.type}
+          dismissible={toast.dismissible}
           onClose={() => removeToast(toast.id)}
         />
       ))}

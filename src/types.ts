@@ -434,6 +434,7 @@ export interface Venue {
     tables: PlacedTable[];
     fixtures: PlacedFixture[];
     decor: PlacedDecor[];
+    ceremonyRows?: CeremonyChairRow[];
     savedAt: string;
   };
 }
@@ -452,6 +453,9 @@ export interface ChairSpec {
   imageUrl?: string;
   images?: ImageItem[]; // Multiple images with labels (up to 10)
   inventoryCount?: number; // Total inventory available (undefined = unlimited)
+  archived?: boolean; // Retained for historical layouts but hidden from new placement
+  catalogFamilyId?: string; // Shared inventory/revision family for archived historical definitions
+  catalogRevision?: number;
 }
 
 // Default chair specifications
@@ -526,6 +530,9 @@ export interface TableSpec {
   inventoryCount?: number; // Total inventory available (undefined = unlimited)
   isRoom?: boolean; // If true, functions as a Lodging Room boundary
   allowAsDecorBase?: boolean; // If true, can be used as a base object in Decor Designer
+  archived?: boolean; // Retained for historical layouts but hidden from new placement
+  catalogFamilyId?: string; // Shared inventory/revision family for archived historical definitions
+  catalogRevision?: number;
 }
 
 // Wall style type
@@ -584,6 +591,9 @@ export interface FixtureType {
     drawingHeight: number;
   };
   allowAsDecorBase?: boolean; // If true, can be used as a base object in Decor Designer
+  archived?: boolean; // Retained for historical layouts but hidden from new placement
+  catalogFamilyId?: string; // Shared inventory/revision family for archived historical definitions
+  catalogRevision?: number;
 }
 
 // Placed table on canvas
@@ -826,6 +836,9 @@ export interface DecorItem {
     drawingWidth: number;
     drawingHeight: number;
   };
+  archived?: boolean; // Retained for historical layouts but hidden from new placement
+  catalogFamilyId?: string; // Shared inventory/revision family for archived historical definitions
+  catalogRevision?: number;
 }
 
 // A specific arrangement of decor (e.g., a "Rustic Centerpiece Set" for a round table)
@@ -1017,6 +1030,7 @@ export interface CoupleSpaceLayout {
   tables: PlacedTable[];
   fixtures: PlacedFixture[];
   decor: PlacedDecor[];
+  ceremonyRows?: CeremonyChairRow[];
   updatedAt: string;
 }
 

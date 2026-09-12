@@ -1,5 +1,11 @@
-import { PlacedTable, PlacedFixture, ChairType } from '../types';
-import { getTableSpecs, getFixtureTypes, getLinenColors } from '../hooks/useLayoutState';
+import { useEffect, useState } from 'react';
+import { PlacedTable, PlacedFixture, PlacedDecor, ChairType } from '../types';
+import { getTableSpecs, getFixtureTypes, getLinenColors, getDecorItems } from '../hooks/useLayoutState';
+import {
+  configuredChairCount,
+  shouldRenderChairGraphics,
+  tableSeatCount,
+} from '../utils/layoutSeating';
 import { getChairSpecs } from '../data/venueData';
 import { useBrandingConfig } from '../config';
 import SafeImage from './SafeImage';
@@ -9,10 +15,13 @@ export interface PropertiesPanelProps {
   selectedId: string | null;
   tables: PlacedTable[];
   fixtures: PlacedFixture[];
+  decor?: PlacedDecor[];
   onUpdateTable: (id: string, updates: Partial<PlacedTable>) => void;
   onUpdateFixture: (id: string, updates: Partial<PlacedFixture>) => void;
+  onUpdateDecor?: (id: string, updates: Partial<PlacedDecor>) => void;
   onRemoveItem: (id: string) => void;
   onDuplicateItem: (id: string) => void;
+  onRepairCatalogReference?: (id: string, replacementId: string) => void;
   onClose: () => void;
   onViewImage: (url: string, title: string) => void;
   visible: boolean;
@@ -24,10 +33,13 @@ export function PropertiesPanel({
   selectedId,
   tables,
   fixtures,
+  decor = [],
   onUpdateTable,
   onUpdateFixture,
+  onUpdateDecor = () => undefined,
   onRemoveItem,
   onDuplicateItem,
+  onRepairCatalogReference,
   onClose,
   onViewImage,
   visible,
@@ -37,19 +49,47 @@ export function PropertiesPanel({
   const config = useBrandingConfig();
   const tableSpecs = getTableSpecs();
   const fixtureTypes = getFixtureTypes();
+  const decorItems = getDecorItems();
   const linenColors = getLinenColors().filter((c) => c.enabled);
+  const [repairSpecId, setRepairSpecId] = useState('');
+  useEffect(() => setRepairSpecId(''), [selectedId]);
 
   const table = tables.find((t) => t.id === selectedId);
   const fixture = fixtures.find((f) => f.id === selectedId);
-  const item = table || fixture;
+  const decorItem = decor.find((candidate) => candidate.id === selectedId);
+  const item = table || fixture || decorItem;
 
   const tableSpec = table ? tableSpecs.find((s) => s.id === table.specId) : null;
   const fixtureSpec = fixture ? fixtureTypes.find((s) => s.id === fixture.specId) : null;
-  const spec = tableSpec || fixtureSpec;
+  const decorSpec = decorItem ? decorItems.find((candidate) => candidate.id === decorItem.decorItemId) : null;
+  const spec = tableSpec || fixtureSpec || decorSpec;
+  const missingReferenceId = table?.specId || fixture?.specId || decorItem?.decorItemId;
+  const repairOptions = table
+    ? tableSpecs.filter((candidate) => !candidate.archived)
+    : fixture
+      ? fixtureTypes.filter((candidate) => !candidate.archived)
+      : decorItem
+        ? decorItems.filter((candidate) => !candidate.archived)
+        : [];
 
-  const effectiveCapacity = tableSpec?.isSeatingType
-    ? table?.chairCount ?? table?.customCapacity ?? tableSpec?.capacity ?? 0
-    : table?.customCapacity ?? tableSpec?.capacity ?? 0;
+  const effectiveCapacity = table && tableSpec ? tableSeatCount(table, tableSpec) : 0;
+  const appliedArrangementId = table?.appliedArrangementId || fixture?.appliedArrangementId;
+  const compatibleArrangements = arrangements.filter((arrangement) => {
+    if (arrangement.id === appliedArrangementId) return true;
+    if (table) {
+      return arrangement.baseType === 'table'
+        && (!arrangement.baseSpecId || arrangement.baseSpecId === table.specId);
+    }
+    if (fixture && fixtureSpec) {
+      if (arrangement.baseType === 'table') return false;
+      if (arrangement.baseSpecId && arrangement.baseSpecId !== fixture.specId) return false;
+      if (arrangement.baseType === 'arch') {
+        return !!fixtureSpec.allowAsDecorBase || fixtureSpec.name.toLowerCase().includes('arch');
+      }
+      return true;
+    }
+    return false;
+  });
 
   const getLinenColorInfo = (colorId?: string) => {
     const defaultColor = {
@@ -65,7 +105,7 @@ export function PropertiesPanel({
   if (!visible) {
     return (
       <div
-        className="w-12 flex flex-col items-center py-4 shadow-lg"
+        className="w-12 h-full min-h-0 flex flex-col items-center py-4 shadow-lg"
         style={{ background: `linear-gradient(to bottom, ${config.primaryColor}, ${config.primaryDark})` }}
       >
         <button
@@ -97,7 +137,7 @@ export function PropertiesPanel({
   }
 
   return (
-    <div className="w-80 bg-gray-50 border-l border-gray-200 flex flex-col shadow-sm">
+    <div className="w-80 h-full min-h-0 overflow-hidden bg-gray-50 border-l border-gray-200 flex flex-col shadow-sm">
       {/* Header */}
       <div
         className="p-3 flex items-center justify-between"
@@ -122,7 +162,7 @@ export function PropertiesPanel({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-4 bg-gray-100">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 bg-gray-100" role="region" aria-label="Selected item properties" tabIndex={0}>
         {!item ? (
           <div className="text-center text-gray-500 py-8">
             <div className="text-4xl mb-3">👆</div>
@@ -152,13 +192,15 @@ export function PropertiesPanel({
                           : '#374151',
                     }}
                   >
-                    {(fixtureSpec as any)?.icon || (spec?.shape === 'circle' ? '●' : '▢')}
+                    {(fixtureSpec as any)?.icon || decorSpec?.icon || ((spec as any)?.shape === 'circle' ? '●' : '▢')}
                   </span>
                 </div>
                 <div>
                   <div className="font-semibold text-gray-800">{spec?.name || 'Unknown'}</div>
                   <div className="text-xs text-gray-500">
-                    {spec?.width}' × {spec?.height}' • {table ? `Seats ${effectiveCapacity}` : 'Fixture'}
+                    {spec
+                      ? `${spec.width}' × ${spec.height}' • ${table ? `Seats ${effectiveCapacity}` : decorItem ? 'Decor' : 'Fixture'}`
+                      : `Missing reference: ${missingReferenceId || 'unknown'}`}
                   </div>
                 </div>
               </div>
@@ -216,33 +258,66 @@ export function PropertiesPanel({
               )}
             </div>
 
+            {!spec && (
+              <div className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-950" role="alert">
+                <div className="font-semibold">Catalog definition is missing</div>
+                <p className="mt-1 text-xs leading-relaxed">
+                  This historical item is using conservative fallback geometry. Choose an active replacement; its ID, label, coordinates, and rotation will be preserved. Boundary and inventory checks run before repair{(table?.appliedArrangementId || fixture?.appliedArrangementId) ? ', and the incompatible applied décor design will be detached' : ''}.
+                </p>
+                <label htmlFor="repair-catalog-reference" className="mt-3 block text-xs font-semibold uppercase tracking-wide text-red-800">
+                  Replacement definition
+                </label>
+                <select
+                  id="repair-catalog-reference"
+                  value={repairSpecId}
+                  onChange={(event) => setRepairSpecId(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-red-300 bg-white px-3 py-2 text-sm text-gray-900"
+                >
+                  <option value="">Choose a replacement…</option>
+                  {repairOptions.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={!repairSpecId}
+                  onClick={() => onRepairCatalogReference?.(item.id, repairSpecId)}
+                  className="mt-3 w-full rounded-lg bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Repair catalog reference
+                </button>
+              </div>
+            )}
+
             {/* Label */}
-            <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
-              <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                Label
-              </label>
-              <input
-                type="text"
-                value={item.label}
-                onChange={(e) => {
-                  if (table) {
-                    onUpdateTable(table.id, { label: e.target.value });
-                  } else if (fixture) {
-                    onUpdateFixture(fixture.id, { label: e.target.value });
-                  }
-                }}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent"
-                placeholder="Enter label..."
-              />
-            </div>
+            {!decorItem && (
+              <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
+                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                  Label
+                </label>
+                <input
+                  type="text"
+                  value={table?.label || fixture?.label || ''}
+                  onChange={(e) => {
+                    if (table) {
+                      onUpdateTable(table.id, { label: e.target.value });
+                    } else if (fixture) {
+                      onUpdateFixture(fixture.id, { label: e.target.value });
+                    }
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent"
+                  placeholder="Enter label..."
+                />
+              </div>
+            )}
 
             {/* Applied Design / Arrangement */}
-            <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
+            {!decorItem && <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
               <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
                 Applied Design
               </label>
               <select
-                value={item.appliedArrangementId || ''}
+                value={appliedArrangementId || ''}
                 onChange={(e) => {
                   const val = e.target.value || undefined;
                   if (table) {
@@ -254,14 +329,14 @@ export function PropertiesPanel({
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent text-sm"
               >
                 <option value="">No Design Applied</option>
-                {arrangements.map((a) => (
+                {compatibleArrangements.map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.name}
                   </option>
                 ))}
               </select>
 
-              {item.appliedArrangementId && (
+              {appliedArrangementId && (
                 <div className="mt-2 flex items-center justify-between">
                   <span className="text-[10px] text-green-600 font-bold uppercase tracking-wider flex items-center gap-1">
                     <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
@@ -269,7 +344,7 @@ export function PropertiesPanel({
                   </span>
                   <button
                     onClick={() => {
-                      emit('spm_open_decor_designer', { arrangementId: item.appliedArrangementId });
+                      emit('spm_open_decor_designer', { arrangementId: appliedArrangementId });
                     }}
                     className="text-[10px] text-blue-600 font-bold hover:underline"
                     type="button"
@@ -278,7 +353,7 @@ export function PropertiesPanel({
                   </button>
                 </div>
               )}
-            </div>
+            </div>}
 
             {/* Fixture Variant Selection */}
             {fixture && fixtureSpec && fixtureSpec.hasVariants && fixtureSpec.variants && (
@@ -341,96 +416,6 @@ export function PropertiesPanel({
                     </button>
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* Table Seating Capacity */}
-            {table && tableSpec && !tableSpec.isSeatingType && (
-              <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
-                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                  Seating Capacity
-                </label>
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => {
-                        const newValue = Math.max(1, effectiveCapacity - 1);
-                        onUpdateTable(table.id, { customCapacity: newValue });
-                      }}
-                      className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded-lg text-lg font-bold transition-colors"
-                      type="button"
-                    >
-                      −
-                    </button>
-
-                    <input
-                      type="number"
-                      min={1}
-                      max={tableSpec.capacity}
-                      value={effectiveCapacity}
-                      onChange={(e) => {
-                        const value = parseInt(e.target.value);
-                        if (value >= 1 && value <= tableSpec.capacity) {
-                          onUpdateTable(table.id, { customCapacity: value });
-                        }
-                      }}
-                      className="w-16 px-2 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent text-center font-semibold"
-                    />
-
-                    <button
-                      onClick={() => {
-                        const newValue = Math.min(tableSpec.capacity, effectiveCapacity + 1);
-                        onUpdateTable(table.id, { customCapacity: newValue });
-                      }}
-                      disabled={effectiveCapacity >= tableSpec.capacity}
-                      className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded-lg text-lg font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      type="button"
-                    >
-                      +
-                    </button>
-
-                    <span className="text-sm text-gray-500">seats</span>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div
-                        className="h-1.5 flex-1 bg-gray-200 rounded-full overflow-hidden"
-                        style={{ width: '80px' }}
-                      >
-                        <div
-                          className="h-full bg-[#4A1942] rounded-full transition-all"
-                          style={{ width: `${(effectiveCapacity / tableSpec.capacity) * 100}%` }}
-                        />
-                      </div>
-                      <span className="text-xs text-gray-500">
-                        {effectiveCapacity}/{tableSpec.capacity}
-                      </span>
-                    </div>
-
-                    {table.customCapacity !== undefined &&
-                      table.customCapacity !== tableSpec.capacity && (
-                        <button
-                          onClick={() => onUpdateTable(table.id, { customCapacity: undefined })}
-                          className="text-xs hover:underline"
-                          style={{ color: config.primaryColor }}
-                          type="button"
-                        >
-                          Reset to max
-                        </button>
-                      )}
-                  </div>
-
-                  {effectiveCapacity >= tableSpec.capacity && (
-                    <p className="text-xs text-amber-600 flex items-center gap-1">
-                      <span>⚠️</span> Maximum capacity reached
-                    </p>
-                  )}
-
-                  <p className="text-xs text-gray-400">
-                    Max capacity: {tableSpec.capacity} seats (set in Admin Panel)
-                  </p>
-                </div>
               </div>
             )}
 
@@ -498,12 +483,20 @@ export function PropertiesPanel({
             {table &&
               tableSpec &&
               (() => {
-                const chairSpecs = getChairSpecs();
-                const effectiveCap = table.customCapacity ?? tableSpec.capacity;
+                const allChairSpecs = getChairSpecs();
                 const isSeatingType = !!tableSpec.isSeatingType;
-                const showChairs = isSeatingType ? true : table.showChairs !== false;
-                const currentChairType = table.chairType || 'white-plastic';
-                const chairCount = table.chairCount ?? effectiveCap;
+                const chairCount = configuredChairCount(table, tableSpec);
+                const showChairs = shouldRenderChairGraphics(table, tableSpec);
+                const currentChairType = table.chairType || tableSpec.defaultChairType || 'white-plastic';
+                const chairSpecs = allChairSpecs.filter((chair) =>
+                  !chair.archived || chair.id === currentChairType);
+                const restoredChairType: ChairType = currentChairType === 'none'
+                  ? tableSpec.defaultChairType && tableSpec.defaultChairType !== 'none'
+                    ? tableSpec.defaultChairType
+                    : 'white-plastic'
+                  : currentChairType;
+                const minimumChairCount = 0;
+                const maxChairCount = Math.max(minimumChairCount, tableSpec.capacity);
 
                 return (
                   <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
@@ -517,7 +510,10 @@ export function PropertiesPanel({
                           onClick={() =>
                             onUpdateTable(table.id, { showChairs: !showChairs })
                           }
-                          className={`relative w-12 h-6 rounded-full transition-colors ${
+                          disabled={chairCount === 0}
+                          aria-pressed={showChairs}
+                          aria-label="Show chair graphics"
+                          className={`relative w-12 h-6 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                             showChairs ? 'bg-[#4A1942]' : 'bg-gray-300'
                           }`}
                           type="button"
@@ -529,34 +525,41 @@ export function PropertiesPanel({
                           />
                         </button>
                         <span className="text-sm text-gray-700">
-                          {showChairs ? 'Show Chairs' : 'Hide Chairs'}
+                          {chairCount === 0
+                            ? 'No chairs configured'
+                            : showChairs
+                              ? 'Chair graphics shown'
+                              : 'Chair graphics hidden'}
                         </span>
                       </div>
                     )}
 
                     {isSeatingType && (
                       <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
-                        Seating types always display chairs.
+                        Seating groups display their configured chairs; zero creates an empty group with no chair footprint.
                       </div>
                     )}
 
-                    {showChairs && (
+                    {/* Chair configuration remains available when graphics are hidden
+                        or the count is zero, so a standing table can be converted back. */}
+                    {chairCount >= 0 && (
                       <>
                         <div className="mb-4">
                           <div className="text-xs text-gray-500 mb-2">Chair Type:</div>
                           <select
                             value={currentChairType}
-                            onChange={(e) =>
-                              onUpdateTable(table.id, {
-                                chairType: e.target.value as ChairType,
-                                ...(isSeatingType ? { showChairs: true } : {}),
-                              })
-                            }
+                            onChange={(e) => {
+                              const nextChairType = e.target.value as ChairType;
+                              onUpdateTable(table.id, nextChairType === 'none'
+                                ? { chairType: 'none', chairCount: 0, showChairs: false }
+                                : {
+                                    chairType: nextChairType,
+                                    ...(isSeatingType ? { showChairs: true } : {}),
+                                  });
+                            }}
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent"
                           >
-                            {chairSpecs
-                              .filter((c) => c.id !== 'none')
-                              .map((chair) => (
+                            {chairSpecs.map((chair) => (
                                 <option key={chair.id} value={chair.id}>
                                   {chair.icon} {chair.name}
                                 </option>
@@ -580,18 +583,23 @@ export function PropertiesPanel({
                         </div>
 
                         <div>
-                          <div className="text-xs text-gray-500 mb-2">Number of Chairs:</div>
+                          <div className="text-xs text-gray-500 mb-2">
+                            {isSeatingType ? 'Chairs per row:' : 'Configured seats:'}
+                          </div>
                           <div className="flex flex-col gap-2">
                             <div className="flex items-center gap-3">
                               <button
                                 onClick={() => {
-                                  const newValue = Math.max(1, chairCount - 1);
+                                  const newValue = Math.max(minimumChairCount, chairCount - 1);
                                   onUpdateTable(table.id, {
                                     chairCount: newValue,
+                                    ...(newValue > 0 && currentChairType === 'none' ? { chairType: restoredChairType } : {}),
                                     ...(isSeatingType ? { showChairs: true } : {}),
                                   });
                                 }}
-                                className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded-lg text-lg font-bold transition-colors"
+                                disabled={chairCount <= minimumChairCount}
+                                aria-label="Remove one configured chair"
+                                className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded-lg text-lg font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 type="button"
                               >
                                 −
@@ -599,14 +607,16 @@ export function PropertiesPanel({
 
                               <input
                                 type="number"
-                                min={1}
-                                max={tableSpec.capacity}
+                                min={minimumChairCount}
+                                max={maxChairCount}
                                 value={chairCount}
+                                aria-label={isSeatingType ? 'Chairs per row' : 'Configured seats'}
                                 onChange={(e) => {
-                                  const value = parseInt(e.target.value);
-                                  if (value >= 1 && value <= tableSpec.capacity) {
+                                  const value = Number.parseInt(e.target.value, 10);
+                                  if (value >= minimumChairCount && value <= maxChairCount) {
                                     onUpdateTable(table.id, {
                                       chairCount: value,
+                                      ...(value > 0 && currentChairType === 'none' ? { chairType: restoredChairType } : {}),
                                       ...(isSeatingType ? { showChairs: true } : {}),
                                     });
                                   }
@@ -616,16 +626,15 @@ export function PropertiesPanel({
 
                               <button
                                 onClick={() => {
-                                  const newValue = Math.min(
-                                    tableSpec.capacity,
-                                    chairCount + 1,
-                                  );
+                                  const newValue = Math.min(maxChairCount, chairCount + 1);
                                   onUpdateTable(table.id, {
                                     chairCount: newValue,
+                                    ...(newValue > 0 && currentChairType === 'none' ? { chairType: restoredChairType } : {}),
                                     ...(isSeatingType ? { showChairs: true } : {}),
                                   });
                                 }}
-                                disabled={chairCount >= tableSpec.capacity}
+                                disabled={chairCount >= maxChairCount}
+                                aria-label="Add one configured chair"
                                 className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded-lg text-lg font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 type="button"
                               >
@@ -644,32 +653,38 @@ export function PropertiesPanel({
                                   <div
                                     className="h-full bg-[#4A1942] rounded-full transition-all"
                                     style={{
-                                      width: `${(chairCount / tableSpec.capacity) * 100}%`,
+                                      width: `${maxChairCount > 0 ? (chairCount / maxChairCount) * 100 : 0}%`,
                                     }}
                                   />
                                 </div>
                                 <span className="text-xs text-gray-500">
-                                  {chairCount}/{tableSpec.capacity}
+                                  {chairCount}/{maxChairCount}
                                 </span>
                               </div>
 
-                              {table.chairCount !== undefined &&
-                                table.chairCount !== effectiveCap && (
-                                  <button
-                                    onClick={() =>
-                                      onUpdateTable(table.id, { chairCount: undefined })
-                                    }
-                                    className="text-xs text-[#4A1942] hover:underline"
-                                    type="button"
-                                  >
-                                    Reset
-                                  </button>
-                                )}
+                              {(table.chairCount !== undefined || table.customCapacity !== undefined) && (
+                                <button
+                                  onClick={() => onUpdateTable(table.id, {
+                                    chairCount: undefined,
+                                    customCapacity: undefined,
+                                  })}
+                                  className="text-xs text-[#4A1942] hover:underline"
+                                  type="button"
+                                >
+                                  Reset to catalog
+                                </button>
+                              )}
                             </div>
 
-                            {chairCount >= tableSpec.capacity && (
+                            {maxChairCount > 0 && chairCount >= maxChairCount && (
                               <p className="text-xs text-amber-600 flex items-center gap-1">
                                 <span>⚠️</span> Maximum chairs for this table
+                              </p>
+                            )}
+
+                            {!isSeatingType && chairCount === 0 && (
+                              <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                                Standing table: no chair graphics or chair clearance will be added.
                               </p>
                             )}
 
@@ -833,6 +848,58 @@ export function PropertiesPanel({
                 );
               })()}
 
+            {decorItem && decorSpec && (
+              <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200 space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Decor notes</label>
+                  <textarea
+                    value={decorItem.notes || ''}
+                    onChange={(event) => onUpdateDecor(decorItem.id, { notes: event.target.value || undefined })}
+                    rows={3}
+                    placeholder="Setup, placement, or handling notes…"
+                    className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-[#4A1942]"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-xs text-gray-500">
+                    Width scale
+                    <input
+                      type="number"
+                      min="0.1"
+                      max="10"
+                      step="0.1"
+                      value={decorItem.scaleX}
+                      onChange={(event) => onUpdateDecor(decorItem.id, { scaleX: Math.max(0.1, Math.min(10, Number(event.target.value) || 0.1)) })}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-xs text-gray-500">
+                    Height scale
+                    <input
+                      type="number"
+                      min="0.1"
+                      max="10"
+                      step="0.1"
+                      value={decorItem.scaleY}
+                      onChange={(event) => onUpdateDecor(decorItem.id, { scaleY: Math.max(0.1, Math.min(10, Number(event.target.value) || 0.1)) })}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                </div>
+                <div>
+                  <label className="flex items-center justify-between text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                    <span>Opacity</span><span>{Math.round((decorItem.opacity ?? 1) * 100)}%</span>
+                  </label>
+                  <input type="range" min="0.1" max="1" step="0.05" value={decorItem.opacity ?? 1} onChange={(event) => onUpdateDecor(decorItem.id, { opacity: Number(event.target.value) })} className="w-full accent-[#4A1942]" />
+                </div>
+                <label className="block text-xs text-gray-500">
+                  Layer order
+                  <input type="number" step="1" value={decorItem.zIndex} onChange={(event) => onUpdateDecor(decorItem.id, { zIndex: Number.parseInt(event.target.value, 10) || 0 })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+                </label>
+                <p className="text-xs text-gray-400">Anchored to: <span className="font-medium capitalize">{decorItem.parentType}</span></p>
+              </div>
+            )}
+
             {/* Position */}
             <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
               <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
@@ -843,13 +910,17 @@ export function PropertiesPanel({
                   <label className="text-xs text-gray-500">X (ft)</label>
                   <input
                     type="number"
-                    value={Math.round(item.x)}
+                    step="0.5"
+                    value={item.x}
                     onChange={(e) => {
-                      const newX = parseInt(e.target.value) || 0;
+                      const newX = Number(e.target.value);
+                      if (!Number.isFinite(newX)) return;
                       if (table) {
                         onUpdateTable(table.id, { x: newX });
                       } else if (fixture) {
                         onUpdateFixture(fixture.id, { x: newX });
+                      } else if (decorItem) {
+                        onUpdateDecor(decorItem.id, { x: newX });
                       }
                     }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent"
@@ -860,13 +931,17 @@ export function PropertiesPanel({
                   <label className="text-xs text-gray-500">Y (ft)</label>
                   <input
                     type="number"
-                    value={Math.round(item.y)}
+                    step="0.5"
+                    value={item.y}
                     onChange={(e) => {
-                      const newY = parseInt(e.target.value) || 0;
+                      const newY = Number(e.target.value);
+                      if (!Number.isFinite(newY)) return;
                       if (table) {
                         onUpdateTable(table.id, { y: newY });
                       } else if (fixture) {
                         onUpdateFixture(fixture.id, { y: newY });
+                      } else if (decorItem) {
+                        onUpdateDecor(decorItem.id, { y: newY });
                       }
                     }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#4A1942] focus:border-transparent"
@@ -891,6 +966,8 @@ export function PropertiesPanel({
                     onUpdateTable(table.id, { rotation: newRotation });
                   } else if (fixture) {
                     onUpdateFixture(fixture.id, { rotation: newRotation });
+                  } else if (decorItem) {
+                    onUpdateDecor(decorItem.id, { rotation: newRotation });
                   }
                 }}
                 className="w-full accent-[#4A1942]"
@@ -905,6 +982,8 @@ export function PropertiesPanel({
                         onUpdateTable(table.id, { rotation: angle });
                       } else if (fixture) {
                         onUpdateFixture(fixture.id, { rotation: angle });
+                      } else if (decorItem) {
+                        onUpdateDecor(decorItem.id, { rotation: angle });
                       }
                     }}
                     className={`px-2 py-1 text-xs rounded ${
@@ -924,15 +1003,15 @@ export function PropertiesPanel({
             {table && tableSpec && (
               <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
                 <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                  Seating capacity
+                  Configured seating
                 </label>
                 <div className="text-sm text-gray-700">
                   <span className="font-semibold text-2xl">{effectiveCapacity}</span>
-                  <span className="text-gray-500 ml-1">seats max</span>
+                  <span className="text-gray-500 ml-1">seat{effectiveCapacity === 1 ? '' : 's'}</span>
                 </div>
                 <p className="text-xs text-gray-400 mt-2">
-                  Guest seating is managed by the couple in their portal; this space can
-                  seat up to {effectiveCapacity} guests.
+                  This total follows the configured chair count. Guest assignments remain
+                  with the couple in their portal.
                 </p>
               </div>
             )}
@@ -941,7 +1020,9 @@ export function PropertiesPanel({
             <div className="flex gap-2">
               <button
                 onClick={() => onDuplicateItem(item.id)}
-                className="flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors"
+                disabled={!spec}
+                title={!spec ? 'Repair the missing catalog reference before duplicating' : undefined}
+                className="flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                 style={{ backgroundColor: `${config.primaryColor}1A`, color: config.primaryColor }}
                 type="button"
               >

@@ -3,6 +3,9 @@ import { BrandedSectionHeader, BrandedStatCard, BrandedTips, PatternColorPicker 
 import MultiImageUpload from '../MultiImageUpload';
 import { PatternType, ShapeType, ChairType, RectangularChairLayout, TableSpec } from '../../types';
 import type { AdminCommonProps } from './AdminTabTypes';
+import { createEntityId } from '../../utils/entityId';
+import { catalogFamilyStatus } from '../../utils/catalogFamily';
+import { CatalogRevisionStatus, HistoricalRevisionNotice } from './CatalogRevisionStatus';
 
 export function TableManagement(props: AdminCommonProps) {
   const {
@@ -69,8 +72,8 @@ export function TableManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: TableSpec[] = [
-                        { id: `table-${Date.now()}-1`, name: '60" Round (8)', shape: 'circle', width: 5, height: 5, capacity: 8, color: '#FFFFFF', allowAsDecorBase: true },
-                        { id: `table-${Date.now()}-2`, name: '48" Round (6)', shape: 'circle', width: 4, height: 4, capacity: 6, color: '#FFFFFF', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: '60" Round (8)', shape: 'circle', width: 5, height: 5, capacity: 8, color: '#FFFFFF', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: '48" Round (6)', shape: 'circle', width: 4, height: 4, capacity: 6, color: '#FFFFFF', allowAsDecorBase: true },
                       ];
                       handleSaveTables([...tableSpecs, ...presets]);
                     }}
@@ -82,9 +85,9 @@ export function TableManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: TableSpec[] = [
-                        { id: `table-${Date.now()}-1`, name: '6ft Banquet', shape: 'rectangle', width: 6, height: 2.5, capacity: 6, color: '#FFFFFF', allowAsDecorBase: true },
-                        { id: `table-${Date.now()}-2`, name: '8ft Banquet', shape: 'rectangle', width: 8, height: 2.5, capacity: 8, color: '#FFFFFF', allowAsDecorBase: true },
-                        { id: `table-${Date.now()}-3`, name: '6ft Classroom', shape: 'rectangle', width: 6, height: 1.5, capacity: 3, color: '#FFFFFF', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: '6ft Banquet', shape: 'rectangle', width: 6, height: 2.5, capacity: 6, color: '#FFFFFF', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: '8ft Banquet', shape: 'rectangle', width: 8, height: 2.5, capacity: 8, color: '#FFFFFF', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: '6ft Classroom', shape: 'rectangle', width: 6, height: 1.5, capacity: 3, color: '#FFFFFF', allowAsDecorBase: true },
                       ];
                       handleSaveTables([...tableSpecs, ...presets]);
                     }}
@@ -96,9 +99,9 @@ export function TableManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: TableSpec[] = [
-                        { id: `table-${Date.now()}-1`, name: 'Sweetheart Table', shape: 'semicircle', width: 5, height: 2.5, capacity: 2, color: '#FFF0F5', allowAsDecorBase: true },
-                        { id: `table-${Date.now()}-2`, name: 'Head Table (12)', shape: 'rectangle', width: 16, height: 2.5, capacity: 12, color: '#FFF0F5', defaultChairLayout: 'head-table', allowAsDecorBase: true },
-                        { id: `table-${Date.now()}-3`, name: 'King\'s Table', shape: 'rectangle', width: 20, height: 4, capacity: 20, color: '#FFFAF0', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: 'Sweetheart Table', shape: 'semicircle', width: 5, height: 2.5, capacity: 2, color: '#FFF0F5', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: 'Head Table (12)', shape: 'rectangle', width: 16, height: 2.5, capacity: 12, color: '#FFF0F5', defaultChairLayout: 'head-table', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: 'King\'s Table', shape: 'rectangle', width: 20, height: 4, capacity: 20, color: '#FFFAF0', allowAsDecorBase: true },
                       ];
                       handleSaveTables([...tableSpecs, ...presets]);
                     }}
@@ -110,9 +113,9 @@ export function TableManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: TableSpec[] = [
-                        { id: `table-${Date.now()}-1`, name: 'Cocktail High', shape: 'circle', width: 2.5, height: 2.5, capacity: 4, color: '#F5F5DC', allowAsDecorBase: true },
-                        { id: `table-${Date.now()}-2`, name: 'Cocktail Low', shape: 'circle', width: 3, height: 3, capacity: 6, color: '#F5F5DC', allowAsDecorBase: true },
-                        { id: `table-${Date.now()}-3`, name: 'Bar Height Square', shape: 'rectangle', width: 2, height: 2, capacity: 4, color: '#8B4513', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: 'Cocktail High', shape: 'circle', width: 2.5, height: 2.5, capacity: 4, color: '#F5F5DC', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: 'Cocktail Low', shape: 'circle', width: 3, height: 3, capacity: 6, color: '#F5F5DC', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: 'Bar Height Square', shape: 'rectangle', width: 2, height: 2, capacity: 4, color: '#8B4513', allowAsDecorBase: true },
                       ];
                       handleSaveTables([...tableSpecs, ...presets]);
                     }}
@@ -124,8 +127,8 @@ export function TableManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: TableSpec[] = [
-                        { id: `table-${Date.now()}-1`, name: 'Kids Table', shape: 'rectangle', width: 6, height: 2.5, capacity: 8, color: '#E0F7FA', allowAsDecorBase: true },
-                        { id: `table-${Date.now()}-2`, name: 'Activity Table', shape: 'circle', width: 4, height: 4, capacity: 6, color: '#FFF9C4', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: 'Kids Table', shape: 'rectangle', width: 6, height: 2.5, capacity: 8, color: '#E0F7FA', allowAsDecorBase: true },
+                        { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: 'Activity Table', shape: 'circle', width: 4, height: 4, capacity: 6, color: '#FFF9C4', allowAsDecorBase: true },
                       ];
                       handleSaveTables([...tableSpecs, ...presets]);
                     }}
@@ -165,7 +168,7 @@ export function TableManagement(props: AdminCommonProps) {
                   <button
                     type="button"
                     onClick={() => {
-                      const id = `table-${Date.now()}`;
+                      const id = createEntityId('table', tableSpecs.map((item) => item.id));
                       const newTable: TableSpec = {
                         id,
                         name: 'New Table',
@@ -198,7 +201,7 @@ export function TableManagement(props: AdminCommonProps) {
                     <button
                       onClick={() => {
                         const newTable: TableSpec = {
-                          id: `table-${Date.now()}`,
+                          id: createEntityId('table', tableSpecs.map((item) => item.id)),
                           name: 'New Table',
                           shape: 'circle',
                           width: 6,
@@ -216,9 +219,9 @@ export function TableManagement(props: AdminCommonProps) {
                     <button
                       onClick={() => {
                         const defaults: TableSpec[] = [
-                          { id: `table-${Date.now()}-1`, name: '60" Round (8)', shape: 'circle', width: 5, height: 5, capacity: 8, color: '#FFFFFF', allowAsDecorBase: true },
-                          { id: `table-${Date.now()}-2`, name: '6ft Banquet', shape: 'rectangle', width: 6, height: 2.5, capacity: 6, color: '#FFFFFF', allowAsDecorBase: true },
-                          { id: `table-${Date.now()}-3`, name: '8ft Banquet', shape: 'rectangle', width: 8, height: 2.5, capacity: 8, color: '#FFFFFF', allowAsDecorBase: true },
+                          { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: '60" Round (8)', shape: 'circle', width: 5, height: 5, capacity: 8, color: '#FFFFFF', allowAsDecorBase: true },
+                          { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: '6ft Banquet', shape: 'rectangle', width: 6, height: 2.5, capacity: 6, color: '#FFFFFF', allowAsDecorBase: true },
+                          { id: createEntityId('table', tableSpecs.map((item) => item.id)), name: '8ft Banquet', shape: 'rectangle', width: 8, height: 2.5, capacity: 8, color: '#FFFFFF', allowAsDecorBase: true },
                         ];
                         handleSaveTables(defaults);
                       }}
@@ -248,6 +251,9 @@ export function TableManagement(props: AdminCommonProps) {
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="font-semibold text-gray-800">{table.name}</span>
+                          {table.archived && (
+                            <span className="text-xs bg-gray-700 text-white px-2 py-0.5 rounded-full">Archived</span>
+                          )}
                           <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full capitalize">{table.shape}</span>
                         </div>
                         <div className="flex items-center gap-3 text-xs text-gray-500 mt-0.5">
@@ -257,17 +263,37 @@ export function TableManagement(props: AdminCommonProps) {
                             <span className="flex items-center gap-1 text-green-600">📦 {table.inventoryCount}</span>
                           )}
                         </div>
+                        <CatalogRevisionStatus definition={table} definitions={tableSpecs} compact />
+                        <HistoricalRevisionNotice definition={table} definitions={tableSpecs} />
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
                       {/* Quick Actions in Header */}
+                      {table.archived && !catalogFamilyStatus(tableSpecs, table).hasActiveSibling && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSaveTables(tableSpecs.map((candidate) => candidate.id === table.id
+                              ? { ...candidate, archived: false }
+                              : candidate));
+                          }}
+                          className="text-xs font-semibold text-green-700 px-2 py-1 hover:bg-green-50 rounded"
+                          title="Restore to placement catalog"
+                        >
+                          Restore
+                        </button>
+                      )}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           const duplicate: TableSpec = {
                             ...table,
-                            id: `table-${Date.now()}`,
-                            name: `${table.name} (Copy)`
+                            id: createEntityId('table', tableSpecs.map((item) => item.id)),
+                            name: `${table.name} (Copy)`,
+                            archived: false,
+                            catalogFamilyId: undefined,
+                            catalogRevision: undefined
                           };
                           handleSaveTables([...tableSpecs, duplicate]);
                         }}
@@ -418,7 +444,12 @@ export function TableManagement(props: AdminCommonProps) {
                           <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Default Chair Type</label>
                           <select
                             value={table.defaultChairType || 'white-plastic'}
-                            onChange={(e) => handleSaveTables(tableSpecs.map(t => t.id === table.id ? { ...t, defaultChairType: e.target.value as ChairType } : t))}
+                            onChange={(e) => {
+                              const defaultChairType = e.target.value as ChairType;
+                              handleSaveTables(tableSpecs.map((candidate) => candidate.id === table.id
+                                ? { ...candidate, defaultChairType, ...(defaultChairType === 'none' ? { capacity: 0 } : {}) }
+                                : candidate));
+                            }}
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent"
                           >
                             {getChairSpecs().map(c => (
@@ -679,7 +710,7 @@ export function TableManagement(props: AdminCommonProps) {
                     </button>
                     <button
                       onClick={() => {
-                        const id = `seating-${Date.now()}`;
+                        const id = createEntityId('seating', tableSpecs.map((item) => item.id));
                         const chairsPerRow = 12;
                         const rowCount = 4;
                         const rowSpacing = 3;
@@ -729,7 +760,7 @@ export function TableManagement(props: AdminCommonProps) {
                       <button
                         key={tpl.name}
                         onClick={() => {
-                          const id = `seating-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                          const id = createEntityId('seating', tableSpecs.map((item) => item.id));
                           const dims = getSeatingDimensions('white-plastic', tpl.chairs, tpl.rows, tpl.spacing);
                           const newSeating: TableSpec = {
                             id,
@@ -770,13 +801,34 @@ export function TableManagement(props: AdminCommonProps) {
                         <div className="font-semibold text-gray-800 flex items-center gap-2">
                           <span className="text-gray-400">{expandedSeatingTypes.has(seat.id) ? '▼' : '▶'}</span>
                           {seat.name}
+                          {seat.archived && (
+                            <span className="text-xs bg-gray-700 text-white px-2 py-0.5 rounded-full">Archived</span>
+                          )}
                           <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{seat.capacity} chairs</span>
                         </div>
                         <div className="text-xs text-gray-500 mt-1">
                           {(seat.seatingRowCount || 1)} rows • {(seat.seatingRowSpacing || 3)}ft spacing • {seat.capacity * Math.max(1, seat.seatingRowCount || 1)} total chairs
                         </div>
+                        <CatalogRevisionStatus definition={seat} definitions={tableSpecs} compact />
+                        <HistoricalRevisionNotice definition={seat} definitions={tableSpecs} />
                       </div>
-                      <button
+                      <div className="flex items-center gap-2">
+                        {seat.archived && !catalogFamilyStatus(tableSpecs, seat).hasActiveSibling && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSaveTables(tableSpecs.map((candidate) => candidate.id === seat.id
+                                ? { ...candidate, archived: false }
+                                : candidate));
+                            }}
+                            className="text-xs font-semibold text-green-700 px-2 py-1 hover:bg-green-50 rounded"
+                            title="Restore to placement catalog"
+                          >
+                            Restore
+                          </button>
+                        )}
+                        <button
                         onClick={(e) => {
                           e.stopPropagation();
                           confirmAction(
@@ -787,7 +839,8 @@ export function TableManagement(props: AdminCommonProps) {
                         className="text-gray-400 hover:text-red-600 text-sm px-2 py-1 hover:bg-red-50 rounded"
                       >
                         🗑️
-                      </button>
+                        </button>
+                      </div>
                     </div>
 
                     {expandedSeatingTypes.has(seat.id) && (
@@ -800,10 +853,10 @@ export function TableManagement(props: AdminCommonProps) {
                           <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Chair Count</label>
                           <input
                             type="number"
-                            min="1"
+                            min="0"
                             value={seat.capacity}
                             onChange={(e) => {
-                              const nextCapacity = parseInt(e.target.value) || 1;
+                              const nextCapacity = Math.max(0, parseInt(e.target.value, 10) || 0);
                               const nextRows = Math.max(1, seat.seatingRowCount || 1);
                               const nextSpacing = Math.max(0.5, seat.seatingRowSpacing || 3);
                               const dims = getSeatingDimensions(seat.defaultChairType, nextCapacity, nextRows, nextSpacing);
@@ -831,7 +884,7 @@ export function TableManagement(props: AdminCommonProps) {
                             onChange={(e) => {
                               const nextRows = parseInt(e.target.value) || 1;
                               const nextSpacing = Math.max(0.5, seat.seatingRowSpacing || 3);
-                              const dims = getSeatingDimensions(seat.defaultChairType, seat.capacity || 1, nextRows, nextSpacing);
+                              const dims = getSeatingDimensions(seat.defaultChairType, seat.capacity ?? 0, nextRows, nextSpacing);
                               handleSaveTables(tableSpecs.map(t => t.id === seat.id ? { ...t, seatingRowCount: nextRows, width: dims.width, height: dims.height } : t));
                             }}
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg"
@@ -847,7 +900,7 @@ export function TableManagement(props: AdminCommonProps) {
                             onChange={(e) => {
                               const nextSpacing = parseFloat(e.target.value) || 1;
                               const nextRows = Math.max(1, seat.seatingRowCount || 1);
-                              const dims = getSeatingDimensions(seat.defaultChairType, seat.capacity || 1, nextRows, nextSpacing);
+                              const dims = getSeatingDimensions(seat.defaultChairType, seat.capacity ?? 0, nextRows, nextSpacing);
                               handleSaveTables(tableSpecs.map(t => t.id === seat.id ? { ...t, seatingRowSpacing: nextSpacing, width: dims.width, height: dims.height } : t));
                             }}
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg"
@@ -859,7 +912,7 @@ export function TableManagement(props: AdminCommonProps) {
                             const nextChairType = e.target.value as ChairType;
                             const nextRows = Math.max(1, seat.seatingRowCount || 1);
                             const nextSpacing = Math.max(0.5, seat.seatingRowSpacing || 3);
-                            const dims = getSeatingDimensions(nextChairType, seat.capacity || 1, nextRows, nextSpacing);
+                            const dims = getSeatingDimensions(nextChairType, seat.capacity ?? 0, nextRows, nextSpacing);
                             handleSaveTables(tableSpecs.map(t => t.id === seat.id ? { ...t, defaultChairType: nextChairType, width: dims.width, height: dims.height } : t));
                           }} className="w-full px-3 py-2 border border-gray-300 rounded-lg">
                             {getChairSpecs().filter(c => c.id !== 'none').map(ch => (

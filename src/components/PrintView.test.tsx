@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { PrintView } from './PrintView';
 import { setTableSpecs } from '../hooks/useLayoutState';
@@ -114,7 +114,7 @@ describe('PrintView (Print / Export Polish)', () => {
     expect(printSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('shows floor plan summary stats including capacity and seated guests', () => {
+  it('shows venue-operational stats without couple-facing guest assignment data', () => {
     render(
       <PrintView
         venue={sampleVenue}
@@ -129,8 +129,12 @@ describe('PrintView (Print / Export Polish)', () => {
     expect(screen.getByText(/Grand Ballroom/)).toBeInTheDocument();
     expect(screen.getByText(/Evening Gala/)).toBeInTheDocument();
     expect(screen.getAllByText(/Table 1/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Alice Smith/)).toBeInTheDocument();
-    expect(screen.getByText(/nut allergy/)).toBeInTheDocument();
+    expect(screen.getByText('Venue Items')).toBeInTheDocument();
+    expect(screen.getByText(/Guest assignments are managed in the couple-facing portal/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Alice Smith/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/nut allergy/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Total Guests')).not.toBeInTheDocument();
+    expect(screen.queryByText('Seated')).not.toBeInTheDocument();
   });
 
   it('computes total capacity from placed tables', () => {
@@ -146,8 +150,57 @@ describe('PrintView (Print / Export Polish)', () => {
     );
 
     // Table 1 has custom chairCount = 8.
-    expect(screen.getByText('8')).toBeInTheDocument();
-    expect(screen.getByText('Total Capacity')).toBeInTheDocument();
+    const configuredSeats = screen.getByText('Configured Seats').closest('.rounded-lg');
+    expect(configuredSeats).not.toBeNull();
+    expect(within(configuredSeats as HTMLElement).getByText('8')).toBeInTheDocument();
+    expect(screen.getByText('Venue Maximum')).toBeInTheDocument();
+  });
+
+  it('embeds the canonical Studio SVG without rebuilding or dropping geometry', () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 120 90');
+    svg.innerHTML = `
+      <polygon data-venue-shape="custom" points="10,10 90,10 70,70 10,60"></polygon>
+      <g data-table-id="t1" transform="rotate(37 12.5 12.5)">
+        <circle data-chair-index="0" cx="8" cy="8" r="1"></circle>
+      </g>
+      <g data-decor-id="decor-1" transform="translate(3 4)"></g>
+      <g data-ceremony-row-id="row-1"></g>
+    `;
+    render(
+      <PrintView
+        venue={sampleVenue}
+        tables={sampleTables}
+        fixtures={sampleFixtures}
+        guests={sampleGuests}
+        layoutName="Evening Gala"
+        onClose={vi.fn()}
+        exportSvgRef={{ current: svg }}
+      />,
+    );
+
+    const canonical = screen.getByLabelText('Canonical floor plan');
+    expect(canonical.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 120 90');
+    expect(canonical.querySelector('[data-venue-shape="custom"]')).not.toBeNull();
+    expect(canonical.querySelector('[data-table-id="t1"]')?.getAttribute('transform')).toBe('rotate(37 12.5 12.5)');
+    expect(canonical.querySelector('[data-chair-index="0"]')).not.toBeNull();
+    expect(canonical.querySelector('[data-decor-id="decor-1"]')).not.toBeNull();
+    expect(canonical.querySelector('[data-ceremony-row-id="row-1"]')).not.toBeNull();
+  });
+
+  it('fails closed instead of showing a lossy reconstructed floor plan', () => {
+    render(
+      <PrintView
+        venue={sampleVenue}
+        tables={sampleTables}
+        fixtures={sampleFixtures}
+        guests={sampleGuests}
+        layoutName="Evening Gala"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(/Canonical floor plan unavailable/i);
+    expect(screen.queryByLabelText('Canonical floor plan')).not.toBeInTheDocument();
   });
 
   it('shows a warning toast when PNG export is clicked without an SVG ref ready', () => {
@@ -196,16 +249,16 @@ describe('PrintView (Print / Export Polish)', () => {
       />,
     );
 
-    expect(screen.getByLabelText(/Dietary & Meal notes/i)).toBeChecked();
+    expect(screen.queryByLabelText(/Dietary & Meal notes/i)).not.toBeInTheDocument();
     expect(screen.getByLabelText(/Linen color key/i)).toBeChecked();
     expect(screen.getByLabelText(/Room setup checklist/i)).toBeChecked();
 
     expect(screen.getByRole('heading', { name: /Linen Color Key/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Room Setup Checklist/i })).toBeInTheDocument();
-    expect(screen.getByText(/nut allergy/i)).toBeInTheDocument();
+    expect(screen.queryByText(/nut allergy/i)).not.toBeInTheDocument();
   });
 
-  it('toggling checkboxes hides/shows dietary notes, Linen Color Key, and Room Setup Checklist', () => {
+  it('toggles the venue-operational Linen Color Key and Room Setup Checklist', () => {
     render(
       <PrintView
         venue={sampleVenue}
@@ -217,15 +270,11 @@ describe('PrintView (Print / Export Polish)', () => {
       />,
     );
 
-    const dietaryCheckbox = screen.getByLabelText(/Dietary & Meal notes/i);
     const linenCheckbox = screen.getByLabelText(/Linen color key/i);
     const checklistCheckbox = screen.getByLabelText(/Room setup checklist/i);
 
-    // Uncheck dietary notes
-    fireEvent.click(dietaryCheckbox);
+    expect(screen.queryByText(/Alice Smith/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/nut allergy/i)).not.toBeInTheDocument();
-    // Guest name is still visible
-    expect(screen.getByText(/Alice Smith/i)).toBeInTheDocument();
 
     // Uncheck linen key
     fireEvent.click(linenCheckbox);

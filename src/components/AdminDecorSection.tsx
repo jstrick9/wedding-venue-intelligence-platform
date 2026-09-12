@@ -13,6 +13,9 @@ import EmojiPicker from './EmojiPicker';
 import MultiImageUpload from './MultiImageUpload';
 import { DrawingTool } from './DrawingTool';
 import type { AdminDialogOptions } from './admin/AdminTabTypes';
+import { createEntityId } from '../utils/entityId';
+import { catalogFamilyStatus } from '../utils/catalogFamily';
+import { CatalogRevisionStatus, HistoricalRevisionNotice } from './admin/CatalogRevisionStatus';
 
 interface BrandedSectionHeaderProps {
   icon: string;
@@ -213,7 +216,7 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
   // --- Handlers ---
   const handleAddDecorItem = () => {
     const newItem: DecorItem = {
-      id: `decor-${Date.now()}`,
+      id: createEntityId('decor', decorItems.map((item) => item.id)),
       name: 'New Decor Item',
       categoryId: decorCategories[0]?.id || 'uncategorized',
       width: 1,
@@ -239,7 +242,6 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
       { title: 'Delete decor item?', message: 'Delete this decor item?', kind: 'danger', confirmLabel: 'Delete Item' },
       () => {
         setDecorItems(decorItems.filter(i => i.id !== id));
-        onShowSuccess('Decor item deleted');
       },
     );
   };
@@ -270,7 +272,7 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
 
   const handleAddCategory = () => {
     const newCat: DecorCategoryDef = {
-      id: `cat-${Date.now()}`,
+      id: createEntityId('decor-category', decorCategories.map((item) => item.id)),
       name: 'New Category',
       color: config.primaryColor,
       icon: '📁',
@@ -325,8 +327,8 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
             type="button"
             onClick={() => {
               const presets = [
-                { id: `decor-${Date.now()}-1`, name: 'Ceremony Arch / Arbor', categoryId: 'ceremony-florals', width: 6, height: 2, widthInches: 0, heightInches: 0, icon: '🌸', inventoryCount: 2, defaultColor: '#FFFFFF', createdAt: new Date().toISOString() },
-                { id: `decor-${Date.now()}-2`, name: 'Aisle Floral Marker', categoryId: 'ceremony-florals', width: 1, height: 1, widthInches: 0, heightInches: 0, icon: '🌷', inventoryCount: 16, defaultColor: '#FFFFFF', createdAt: new Date().toISOString() },
+                { id: createEntityId('decor', decorItems.map((item) => item.id)), name: 'Ceremony Arch / Arbor', categoryId: 'ceremony-florals', width: 6, height: 2, widthInches: 0, heightInches: 0, icon: '🌸', inventoryCount: 2, defaultColor: '#FFFFFF', createdAt: new Date().toISOString() },
+                { id: createEntityId('decor', decorItems.map((item) => item.id)), name: 'Aisle Floral Marker', categoryId: 'ceremony-florals', width: 1, height: 1, widthInches: 0, heightInches: 0, icon: '🌷', inventoryCount: 16, defaultColor: '#FFFFFF', createdAt: new Date().toISOString() },
               ];
               setDecorItems([...decorItems, ...presets]);
               onShowSuccess('Added Ceremony Florals presets!');
@@ -339,8 +341,8 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
             type="button"
             onClick={() => {
               const presets = [
-                { id: `decor-${Date.now()}-1`, name: 'Pillar Candle Trio', categoryId: 'table-centerpieces', width: 1, height: 1, widthInches: 0, heightInches: 0, icon: '🕯️', inventoryCount: 40, defaultColor: '#FFF8DC', createdAt: new Date().toISOString() },
-                { id: `decor-${Date.now()}-2`, name: 'Eucalyptus Table Garland', categoryId: 'table-centerpieces', width: 6, height: 1, widthInches: 0, heightInches: 0, icon: '🌿', inventoryCount: 25, defaultColor: '#2E8B57', createdAt: new Date().toISOString() },
+                { id: createEntityId('decor', decorItems.map((item) => item.id)), name: 'Pillar Candle Trio', categoryId: 'table-centerpieces', width: 1, height: 1, widthInches: 0, heightInches: 0, icon: '🕯️', inventoryCount: 40, defaultColor: '#FFF8DC', createdAt: new Date().toISOString() },
+                { id: createEntityId('decor', decorItems.map((item) => item.id)), name: 'Eucalyptus Table Garland', categoryId: 'table-centerpieces', width: 6, height: 1, widthInches: 0, heightInches: 0, icon: '🌿', inventoryCount: 25, defaultColor: '#2E8B57', createdAt: new Date().toISOString() },
               ];
               setDecorItems([...decorItems, ...presets]);
               onShowSuccess('Added Table Centerpieces presets!');
@@ -353,8 +355,8 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
             type="button"
             onClick={() => {
               const presets = [
-                { id: `decor-${Date.now()}-1`, name: 'Crystal Chandelier', categoryId: 'lighting-drapery', width: 3, height: 3, widthInches: 0, heightInches: 0, icon: '✨', inventoryCount: 4, defaultColor: '#FFD700', createdAt: new Date().toISOString() },
-                { id: `decor-${Date.now()}-2`, name: 'Ceiling Drapery Swag (20ft)', categoryId: 'lighting-drapery', width: 20, height: 2, widthInches: 0, heightInches: 0, icon: '🎀', inventoryCount: 8, defaultColor: '#FFFFFF', createdAt: new Date().toISOString() },
+                { id: createEntityId('decor', decorItems.map((item) => item.id)), name: 'Crystal Chandelier', categoryId: 'lighting-drapery', width: 3, height: 3, widthInches: 0, heightInches: 0, icon: '✨', inventoryCount: 4, defaultColor: '#FFD700', createdAt: new Date().toISOString() },
+                { id: createEntityId('decor', decorItems.map((item) => item.id)), name: 'Ceiling Drapery Swag (20ft)', categoryId: 'lighting-drapery', width: 20, height: 2, widthInches: 0, heightInches: 0, icon: '🎀', inventoryCount: 8, defaultColor: '#FFFFFF', createdAt: new Date().toISOString() },
               ];
               setDecorItems([...decorItems, ...presets]);
               onShowSuccess('Added Lighting & Drapery presets!');
@@ -367,8 +369,8 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
             type="button"
             onClick={() => {
               const presets = [
-                { id: `decor-${Date.now()}-1`, name: 'Welcome Mirror Sign', categoryId: 'signage-accents', width: 2.5, height: 1, widthInches: 0, heightInches: 0, icon: '🪞', inventoryCount: 2, defaultColor: '#C0C0C0', createdAt: new Date().toISOString() },
-                { id: `decor-${Date.now()}-2`, name: 'Lounge Sofa Seating Group', categoryId: 'signage-accents', width: 7, height: 4, widthInches: 0, heightInches: 0, icon: '🛋️', inventoryCount: 3, defaultColor: '#F5F5DC', createdAt: new Date().toISOString() },
+                { id: createEntityId('decor', decorItems.map((item) => item.id)), name: 'Welcome Mirror Sign', categoryId: 'signage-accents', width: 2.5, height: 1, widthInches: 0, heightInches: 0, icon: '🪞', inventoryCount: 2, defaultColor: '#C0C0C0', createdAt: new Date().toISOString() },
+                { id: createEntityId('decor', decorItems.map((item) => item.id)), name: 'Lounge Sofa Seating Group', categoryId: 'signage-accents', width: 7, height: 4, widthInches: 0, heightInches: 0, icon: '🛋️', inventoryCount: 3, defaultColor: '#F5F5DC', createdAt: new Date().toISOString() },
               ];
               setDecorItems([...decorItems, ...presets]);
               onShowSuccess('Added Lounge & Bar Decor presets!');
@@ -499,7 +501,12 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
                         )}
                       </div>
                       <div>
-                        <h4 className="font-semibold text-gray-900">{item.name}</h4>
+                        <h4 className="flex items-center gap-2 font-semibold text-gray-900">
+                          <span>{item.name}</span>
+                          {item.archived && (
+                            <span className="rounded-full bg-gray-700 px-2 py-0.5 text-[10px] text-white">Archived</span>
+                          )}
+                        </h4>
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
                             {decorCategories.find(c => c.id === item.categoryId)?.name || 'Uncategorized'}
@@ -508,6 +515,8 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
                             {item.width}'{item.widthInches}" × {item.height}'{item.heightInches}"
                           </span>
                         </div>
+                        <CatalogRevisionStatus definition={item} definitions={decorItems} compact />
+                        <HistoricalRevisionNotice definition={item} definitions={decorItems} />
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
@@ -517,6 +526,20 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
                           {item.inventoryCount || 0}
                         </p>
                       </div>
+                      {item.archived && !catalogFamilyStatus(decorItems, item).hasActiveSibling && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDecorItems(decorItems.map((candidate) => candidate.id === item.id
+                              ? { ...candidate, archived: false }
+                              : candidate));
+                          }}
+                          className="rounded-lg px-2 py-1 text-xs font-semibold text-green-700 hover:bg-green-50"
+                        >
+                          Restore
+                        </button>
+                      )}
                       <button 
                         onClick={(e) => { e.stopPropagation(); handleDeleteDecorItem(item.id); }}
                         className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
@@ -710,7 +733,7 @@ export const AdminDecorSection: React.FC<AdminDecorSectionProps> = ({
                   Reset to Defaults
                 </button>
                 <button 
-                  onClick={() => setDecorPackages([...decorPackages, { id: `pkg-${Date.now()}`, name: 'New Style Package', style: 'Modern', arrangements: [] }])}
+                  onClick={() => setDecorPackages([...decorPackages, { id: createEntityId('decor-package', decorPackages.map((item) => item.id)), name: 'New Style Package', style: 'Modern', arrangements: [] }])}
                   className="px-6 py-2 text-white font-medium rounded-lg hover:opacity-90"
                   style={{ backgroundColor: config.primaryColor }}
                 >

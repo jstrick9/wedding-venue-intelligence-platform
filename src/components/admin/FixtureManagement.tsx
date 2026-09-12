@@ -4,6 +4,9 @@ import EmojiPicker from '../EmojiPicker';
 import MultiImageUpload from '../MultiImageUpload';
 import { PatternType, ShapeType, FixtureType } from '../../types';
 import type { AdminCommonProps } from './AdminTabTypes';
+import { createEntityId } from '../../utils/entityId';
+import { catalogFamilyStatus } from '../../utils/catalogFamily';
+import { CatalogRevisionStatus, HistoricalRevisionNotice } from './CatalogRevisionStatus';
 
 export function FixtureManagement(props: AdminCommonProps) {
   const {
@@ -76,9 +79,9 @@ export function FixtureManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: FixtureType[] = [
-                        { id: `fix-${Date.now()}-1`, name: 'Dance Floor', shape: 'rectangle', width: 18, height: 18, icon: '💃', color: '#1a1a1a', category: 'interior', pattern: 'checkered' },
-                        { id: `fix-${Date.now()}-2`, name: 'DJ Booth', shape: 'rectangle', width: 6, height: 4, icon: '🎧', color: '#374151', category: 'interior' },
-                        { id: `fix-${Date.now()}-3`, name: 'Stage', shape: 'rectangle', width: 12, height: 8, icon: '🎤', color: '#78350f', category: 'interior', pattern: 'wood' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Dance Floor', shape: 'rectangle', width: 18, height: 18, icon: '💃', color: '#1a1a1a', category: 'interior', pattern: 'checkered' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'DJ Booth', shape: 'rectangle', width: 6, height: 4, icon: '🎧', color: '#374151', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Stage', shape: 'rectangle', width: 12, height: 8, icon: '🎤', color: '#78350f', category: 'interior', pattern: 'wood' },
                       ];
                       handleSaveFixtures([...fixtureTypes, ...presets]);
                     }}
@@ -90,9 +93,9 @@ export function FixtureManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: FixtureType[] = [
-                        { id: `fix-${Date.now()}-1`, name: 'Sweetheart Table', shape: 'semicircle', width: 6, height: 3, icon: '💕', color: '#fdf2f8', category: 'interior' },
-                        { id: `fix-${Date.now()}-2`, name: 'Head Table', shape: 'rectangle', width: 16, height: 3, icon: '👑', color: '#fef3c7', category: 'interior' },
-                        { id: `fix-${Date.now()}-3`, name: 'Gift Table', shape: 'rectangle', width: 6, height: 3, icon: '🎁', color: '#f3e8ff', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Sweetheart Table', shape: 'semicircle', width: 6, height: 3, icon: '💕', color: '#fdf2f8', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Head Table', shape: 'rectangle', width: 16, height: 3, icon: '👑', color: '#fef3c7', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Gift Table', shape: 'rectangle', width: 6, height: 3, icon: '🎁', color: '#f3e8ff', category: 'interior' },
                       ];
                       handleSaveFixtures([...fixtureTypes, ...presets]);
                     }}
@@ -104,10 +107,10 @@ export function FixtureManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: FixtureType[] = [
-                        { id: `fix-${Date.now()}-1`, name: 'Buffet Station', shape: 'rectangle', width: 10, height: 3, icon: '🍽️', color: '#fef3c7', category: 'interior' },
-                        { id: `fix-${Date.now()}-2`, name: 'Bar', shape: 'rectangle', width: 12, height: 4, icon: '🍸', color: '#422006', category: 'interior', pattern: 'wood' },
-                        { id: `fix-${Date.now()}-3`, name: 'Cake Table', shape: 'circle', width: 4, height: 4, icon: '🎂', color: '#fce7f3', category: 'interior' },
-                        { id: `fix-${Date.now()}-4`, name: 'Dessert Table', shape: 'rectangle', width: 8, height: 3, icon: '🧁', color: '#fed7aa', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Buffet Station', shape: 'rectangle', width: 10, height: 3, icon: '🍽️', color: '#fef3c7', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Bar', shape: 'rectangle', width: 12, height: 4, icon: '🍸', color: '#422006', category: 'interior', pattern: 'wood' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Cake Table', shape: 'circle', width: 4, height: 4, icon: '🎂', color: '#fce7f3', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Dessert Table', shape: 'rectangle', width: 8, height: 3, icon: '🧁', color: '#fed7aa', category: 'interior' },
                       ];
                       handleSaveFixtures([...fixtureTypes, ...presets]);
                     }}
@@ -119,9 +122,9 @@ export function FixtureManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: FixtureType[] = [
-                        { id: `fix-${Date.now()}-1`, name: 'Photo Booth', shape: 'rectangle', width: 8, height: 6, icon: '📸', color: '#e0e7ff', category: 'interior' },
-                        { id: `fix-${Date.now()}-2`, name: 'Guest Book Station', shape: 'rectangle', width: 4, height: 2, icon: '📖', color: '#fef3c7', category: 'interior' },
-                        { id: `fix-${Date.now()}-3`, name: 'Welcome Sign', shape: 'rectangle', width: 3, height: 4, icon: '✨', color: '#f3e8ff', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Photo Booth', shape: 'rectangle', width: 8, height: 6, icon: '📸', color: '#e0e7ff', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Guest Book Station', shape: 'rectangle', width: 4, height: 2, icon: '📖', color: '#fef3c7', category: 'interior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Welcome Sign', shape: 'rectangle', width: 3, height: 4, icon: '✨', color: '#f3e8ff', category: 'interior' },
                       ];
                       handleSaveFixtures([...fixtureTypes, ...presets]);
                     }}
@@ -133,9 +136,9 @@ export function FixtureManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: FixtureType[] = [
-                        { id: `fix-${Date.now()}-1`, name: 'Fountain', shape: 'circle', width: 8, height: 8, icon: '⛲', color: '#bfdbfe', category: 'exterior', pattern: 'water' },
-                        { id: `fix-${Date.now()}-2`, name: 'Garden Path', shape: 'rectangle', width: 20, height: 4, icon: '🪨', color: '#d6d3d1', category: 'exterior', pattern: 'gravel' },
-                        { id: `fix-${Date.now()}-3`, name: 'Pond', shape: 'oval', width: 15, height: 10, icon: '🦆', color: '#7dd3fc', category: 'exterior', pattern: 'water' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Fountain', shape: 'circle', width: 8, height: 8, icon: '⛲', color: '#bfdbfe', category: 'exterior', pattern: 'water' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Garden Path', shape: 'rectangle', width: 20, height: 4, icon: '🪨', color: '#d6d3d1', category: 'exterior', pattern: 'gravel' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Pond', shape: 'oval', width: 15, height: 10, icon: '🦆', color: '#7dd3fc', category: 'exterior', pattern: 'water' },
                       ];
                       handleSaveFixtures([...fixtureTypes, ...presets]);
                     }}
@@ -147,10 +150,10 @@ export function FixtureManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: FixtureType[] = [
-                        { id: `fix-${Date.now()}-1`, name: 'Large Tree', shape: 'circle', width: 12, height: 12, icon: '🌳', color: '#166534', category: 'exterior' },
-                        { id: `fix-${Date.now()}-2`, name: 'Flower Bed', shape: 'oval', width: 8, height: 4, icon: '🌸', color: '#f9a8d4', category: 'exterior', pattern: 'grass' },
-                        { id: `fix-${Date.now()}-3`, name: 'Hedge Row', shape: 'rectangle', width: 20, height: 3, icon: '🌿', color: '#22c55e', category: 'exterior' },
-                        { id: `fix-${Date.now()}-4`, name: 'Lawn Area', shape: 'rectangle', width: 30, height: 20, icon: '🌱', color: '#86efac', category: 'exterior', pattern: 'grass' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Large Tree', shape: 'circle', width: 12, height: 12, icon: '🌳', color: '#166534', category: 'exterior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Flower Bed', shape: 'oval', width: 8, height: 4, icon: '🌸', color: '#f9a8d4', category: 'exterior', pattern: 'grass' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Hedge Row', shape: 'rectangle', width: 20, height: 3, icon: '🌿', color: '#22c55e', category: 'exterior' },
+                        { id: createEntityId('fixture', fixtureTypes.map((item) => item.id)), name: 'Lawn Area', shape: 'rectangle', width: 30, height: 20, icon: '🌱', color: '#86efac', category: 'exterior', pattern: 'grass' },
                       ];
                       handleSaveFixtures([...fixtureTypes, ...presets]);
                     }}
@@ -186,7 +189,7 @@ export function FixtureManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const newFixture: FixtureType = {
-                        id: `fixture-${Date.now()}`,
+                        id: createEntityId('fixture', fixtureTypes.map((item) => item.id)),
                         name: 'New Venue Fixture',
                         shape: 'rectangle',
                         width: 4,
@@ -206,7 +209,7 @@ export function FixtureManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const newFixture: FixtureType = {
-                        id: `fixture-${Date.now()}`,
+                        id: createEntityId('fixture', fixtureTypes.map((item) => item.id)),
                         name: 'New Lodging/Utilities Fixture',
                         shape: 'rectangle',
                         width: 12,
@@ -228,7 +231,7 @@ export function FixtureManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const newFixture: FixtureType = {
-                        id: `fixture-${Date.now()}`,
+                        id: createEntityId('fixture', fixtureTypes.map((item) => item.id)),
                         name: 'New Architectural/Landscape Feature',
                         shape: 'rectangle',
                         width: 10,
@@ -308,11 +311,27 @@ export function FixtureManagement(props: AdminCommonProps) {
                         </svg>
                         <span className="text-2xl">{fixture.icon}</span>
                         <span className="font-semibold text-purple-800">{fixture.name}</span>
+                        {fixture.archived && <span className="rounded-full bg-gray-700 px-2 py-0.5 text-xs text-white">Archived</span>}
+                        <CatalogRevisionStatus definition={fixture} definitions={fixtureTypes} compact />
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded">
                           {fixture.width}' × {fixture.height}'
                         </span>
+                        {fixture.archived && !catalogFamilyStatus(fixtureTypes, fixture).hasActiveSibling && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSaveFixtures(fixtureTypes.map((candidate) => candidate.id === fixture.id
+                                ? { ...candidate, archived: false }
+                                : candidate));
+                            }}
+                            className="text-xs font-semibold text-green-700 px-2 py-1 hover:bg-green-100 rounded"
+                          >
+                            Restore
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -329,6 +348,7 @@ export function FixtureManagement(props: AdminCommonProps) {
                     </div>
                     {expandedVenueFixtures.has(fixture.id) && (
                     <div className="p-4 space-y-3">
+                      <HistoricalRevisionNotice definition={fixture} definitions={fixtureTypes} />
                       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
                         <div>
                           <label className="text-xs font-medium text-gray-500 uppercase">Name</label>
@@ -675,11 +695,27 @@ export function FixtureManagement(props: AdminCommonProps) {
                           </svg>
                           <span className="text-2xl">{fixture.icon || '🛏️'}</span>
                           <span className="font-semibold text-cyan-800">{fixture.name}</span>
+                          {fixture.archived && <span className="rounded-full bg-gray-700 px-2 py-0.5 text-xs text-white">Archived</span>}
+                        <CatalogRevisionStatus definition={fixture} definitions={fixtureTypes} compact />
                           <span className="text-xs bg-cyan-100 text-cyan-700 px-2 py-1 rounded">{(fixture.lodgingType || 'other').replace('entry-exit', 'entry/exit').replace(/^./, c => c.toUpperCase())}</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs bg-cyan-100 text-cyan-700 px-2 py-1 rounded">{fixture.width}' × {fixture.height}'</span>
                           {fixture.lodgingType === 'rooms' && <span className="text-xs bg-[#4A1942]/10 text-[#4A1942] px-2 py-1 rounded">Max {fixture.capacity || 0}</span>}
+                          {fixture.archived && !catalogFamilyStatus(fixtureTypes, fixture).hasActiveSibling && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSaveFixtures(fixtureTypes.map((candidate) => candidate.id === fixture.id
+                                  ? { ...candidate, archived: false }
+                                  : candidate));
+                              }}
+                              className="text-xs font-semibold text-green-700 px-2 py-1 hover:bg-green-100 rounded"
+                            >
+                              Restore
+                            </button>
+                          )}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -696,6 +732,7 @@ export function FixtureManagement(props: AdminCommonProps) {
                       </div>
                       {expandedLodgingFixtures.has(fixture.id) && (
                         <div className="p-4 space-y-3">
+                          <HistoricalRevisionNotice definition={fixture} definitions={fixtureTypes} />
                           <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
                             <div>
                               <label className="text-xs font-medium text-gray-500 uppercase">Name</label>
@@ -928,11 +965,27 @@ export function FixtureManagement(props: AdminCommonProps) {
                         </svg>
                         <span className="text-2xl">{fixture.icon}</span>
                         <span className="font-semibold text-green-800">{fixture.name}</span>
+                        {fixture.archived && <span className="rounded-full bg-gray-700 px-2 py-0.5 text-xs text-white">Archived</span>}
+                        <CatalogRevisionStatus definition={fixture} definitions={fixtureTypes} compact />
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
                           {fixture.width}' × {fixture.height}'
                         </span>
+                        {fixture.archived && !catalogFamilyStatus(fixtureTypes, fixture).hasActiveSibling && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSaveFixtures(fixtureTypes.map((candidate) => candidate.id === fixture.id
+                                ? { ...candidate, archived: false }
+                                : candidate));
+                            }}
+                            className="text-xs font-semibold text-green-700 px-2 py-1 hover:bg-green-100 rounded"
+                          >
+                            Restore
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -949,6 +1002,7 @@ export function FixtureManagement(props: AdminCommonProps) {
                     </div>
                     {expandedExteriorFixtures.has(fixture.id) && (
                     <div className="p-4 space-y-3">
+                      <HistoricalRevisionNotice definition={fixture} definitions={fixtureTypes} />
                       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
                         <div>
                           <label className="text-xs font-medium text-gray-500 uppercase">Name</label>

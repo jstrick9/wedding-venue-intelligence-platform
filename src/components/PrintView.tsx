@@ -1,16 +1,18 @@
 import { useState } from 'react';
-import { Venue, PlacedTable, PlacedFixture, Guest } from '../types';
-import { getTableSpecs, getFixtureTypes, getLinenColors } from '../hooks/useLayoutState';
+import { Venue, PlacedTable, PlacedFixture, Guest, CeremonyChairRow } from '../types';
+import { getTableSpecs, getLinenColors } from '../hooks/useLayoutState';
 import { getConfig } from '../config';
 import SafeImage from './SafeImage';
 import { downloadLayoutPng, downloadLayoutPdf } from '../utils/layoutExport';
 import { showToast } from './Toast';
 import { describeUnknownError } from '../utils/unknownError';
+import { layoutSeatCount, tableSeatCount } from '../utils/layoutSeating';
 
 export interface PrintViewProps {
   venue: Venue;
   tables: PlacedTable[];
   fixtures: PlacedFixture[];
+  ceremonyRows?: CeremonyChairRow[];
   guests: Guest[];
   layoutName: string;
   onClose: () => void;
@@ -22,18 +24,20 @@ export function PrintView({
   venue,
   tables,
   fixtures,
-  guests,
+  ceremonyRows = [],
   layoutName,
   onClose,
   exportSvgRef,
 }: PrintViewProps) {
   const tableSpecs = getTableSpecs();
-  const fixtureTypes = getFixtureTypes();
   const config = getConfig();
   const [exporting, setExporting] = useState<'png' | 'pdf' | null>(null);
-  const [showDietaryNotes, setShowDietaryNotes] = useState(true);
   const [showLinenColorKey, setShowLinenColorKey] = useState(true);
   const [showRoomSetupChecklist, setShowRoomSetupChecklist] = useState(true);
+  // Capture the already-rendered canonical Design Studio SVG when the print
+  // preview opens. This keeps venue shape, rotations, chairs, decor, and canvas
+  // geometry identical instead of rebuilding an incomplete second floor plan.
+  const [floorPlanSvgMarkup] = useState(() => exportSvgRef?.current?.outerHTML || '');
 
   const handlePrint = () => {
     window.print();
@@ -61,37 +65,14 @@ export function PrintView({
     }
   };
 
-  // Single source of truth for a table's capacity, consistent with the guest
-  // panel / canvas counter: seating rows use chairCount×rowCount; otherwise
-  // customCapacity overrides the spec capacity.
+  // One seating source of truth across the editor, couple portal, assignments,
+  // and print: the placed chair count (with legacy/catalog fallback).
   const tableCapacity = (table: PlacedTable) => {
-    const spec = tableSpecs.find((s) => s.id === table.specId);
-    if (!spec) return 0;
-    if (spec.isSeatingType) {
-      const perRow = table.chairCount ?? table.customCapacity ?? spec.capacity ?? 0;
-      const rowCount = Math.max(1, spec.seatingRowCount || 1);
-      return perRow * rowCount;
-    }
-    return table.customCapacity ?? spec.capacity ?? 0;
+    const spec = tableSpecs.find((candidate) => candidate.id === table.specId);
+    return tableSeatCount(table, spec);
   };
 
-  const getTotalCapacity = () => {
-    return tables.reduce((sum, table) => sum + tableCapacity(table), 0);
-  };
-
-  // Compact dietary/meal/accessibility notes for a printable guest row.
-  const guestNotes = (g: Guest): string => {
-    if (!showDietaryNotes) return '';
-    const parts: string[] = [];
-    if (g.mealChoice && g.mealChoice !== 'standard') parts.push(`Meal: ${g.mealChoice}`);
-    if (g.dietaryRestrictions) parts.push(g.dietaryRestrictions);
-    if (g.accessibility) parts.push('Accessibility');
-    return parts.length ? ` — ${parts.join('; ')}` : '';
-  };
-
-  const getSeatedGuests = () => {
-    return guests.filter((g) => tables.some((t) => t.guests.includes(g.id))).length;
-  };
+  const getTotalCapacity = () => layoutSeatCount(tables, tableSpecs, ceremonyRows);
 
   return (
     <div className="fixed inset-0 z-[10000] bg-white overflow-auto spm-print-view">
@@ -134,15 +115,6 @@ export function PrintView({
 
         <div className="flex items-center gap-6 text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 flex-wrap">
           <span className="font-semibold text-gray-600">Print sheet options:</span>
-          <label className="inline-flex items-center gap-1.5 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showDietaryNotes}
-              onChange={(e) => setShowDietaryNotes(e.target.checked)}
-              className="rounded accent-[#4A1942]"
-            />
-            <span>Dietary &amp; Meal notes</span>
-          </label>
           <label className="inline-flex items-center gap-1.5 cursor-pointer">
             <input
               type="checkbox"
@@ -190,16 +162,16 @@ export function PrintView({
             <div className="text-sm text-gray-600">Tables</div>
           </div>
           <div className="rounded-lg border bg-gray-50 p-4 text-center">
+            <div className="text-2xl font-bold text-gray-900">{fixtures.length}</div>
+            <div className="text-sm text-gray-600">Venue Items</div>
+          </div>
+          <div className="rounded-lg border bg-gray-50 p-4 text-center">
             <div className="text-2xl font-bold text-gray-900">{getTotalCapacity()}</div>
-            <div className="text-sm text-gray-600">Total Capacity</div>
+            <div className="text-sm text-gray-600">Configured Seats</div>
           </div>
           <div className="rounded-lg border bg-gray-50 p-4 text-center">
-            <div className="text-2xl font-bold text-gray-900">{guests.length}</div>
-            <div className="text-sm text-gray-600">Total Guests</div>
-          </div>
-          <div className="rounded-lg border bg-gray-50 p-4 text-center">
-            <div className="text-2xl font-bold text-gray-900">{getSeatedGuests()}</div>
-            <div className="text-sm text-gray-600">Seated</div>
+            <div className="text-2xl font-bold text-gray-900">{venue.capacity}</div>
+            <div className="text-sm text-gray-600">Venue Maximum</div>
           </div>
         </div>
 
@@ -234,197 +206,51 @@ export function PrintView({
         <div className="mb-10">
           <h3 className="text-xl font-semibold text-gray-900 mb-4">Floor Plan</h3>
 
-          <div className="border rounded-xl overflow-hidden bg-white">
-            <svg
-              viewBox={`0 0 ${venue.width + 20} ${venue.height + 20}`}
-              className="w-full h-auto"
-            >
-              <rect
-                x={10}
-                y={10}
-                width={venue.width}
-                height={venue.height}
-                fill={venue.color || '#FFFFFF'}
-                stroke={venue.borderColor || '#4A1942'}
-                strokeWidth={0.5}
-              />
-
-              {tables.map((table) => {
-                const spec = tableSpecs.find((s) => s.id === table.specId);
-                const x = 10 + Number(table.x || 0);
-                const y = 10 + Number(table.y || 0);
-
-                if (!spec) {
-                  return (
-                    <g key={table.id}>
-                      <rect
-                        x={x}
-                        y={y}
-                        width={6}
-                        height={6}
-                        fill="#fef2f2"
-                        stroke="#dc2626"
-                        strokeWidth={0.5}
-                      />
-                      <text
-                        x={x + 3}
-                        y={y + 4}
-                        textAnchor="middle"
-                        fontSize={1.5}
-                        fill="#991b1b"
-                      >
-                        Missing table spec
-                      </text>
-                    </g>
-                  );
-                }
-
-                return (
-                  <g key={table.id}>
-                    {spec.shape === 'circle' ? (
-                      <circle
-                        cx={x + spec.width / 2}
-                        cy={y + spec.height / 2}
-                        r={Math.max(1, spec.width / 2)}
-                        fill="#f8fafc"
-                        stroke="#4A1942"
-                        strokeWidth={0.3}
-                      />
-                    ) : (
-                      <rect
-                        x={x}
-                        y={y}
-                        width={Math.max(1, spec.width)}
-                        height={Math.max(1, spec.height)}
-                        fill="#f8fafc"
-                        stroke="#4A1942"
-                        strokeWidth={0.3}
-                        rx={0.5}
-                      />
-                    )}
-                    <text
-                      x={x + spec.width / 2}
-                      y={y + spec.height / 2}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fontSize={1.8}
-                      fill="#1f2937"
-                    >
-                      {table.label}
-                    </text>
-                  </g>
-                );
-              })}
-
-              {fixtures.map((fixture) => {
-                const spec = fixtureTypes.find((s) => s.id === fixture.specId);
-                if (fixture.isExterior) return null;
-
-                const x = 10 + Number(fixture.x || 0);
-                const y = 10 + Number(fixture.y || 0);
-
-                if (!spec) {
-                  return (
-                    <g key={fixture.id}>
-                      <rect
-                        x={x}
-                        y={y}
-                        width={6}
-                        height={6}
-                        fill="#fef2f2"
-                        stroke="#dc2626"
-                        strokeWidth={0.5}
-                      />
-                      <text
-                        x={x + 3}
-                        y={y + 4}
-                        textAnchor="middle"
-                        fontSize={1.5}
-                        fill="#991b1b"
-                      >
-                        Missing fixture
-                      </text>
-                    </g>
-                  );
-                }
-
-                return (
-                  <g key={fixture.id}>
-                    <rect
-                      x={x}
-                      y={y}
-                      width={Math.max(1, spec.width)}
-                      height={Math.max(1, spec.height)}
-                      fill="#eef2ff"
-                      stroke="#4A1942"
-                      strokeWidth={0.3}
-                      rx={0.5}
-                    />
-                    <text
-                      x={x + spec.width / 2}
-                      y={y + spec.height / 2}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fontSize={2}
-                    >
-                      {spec.icon || '■'}
-                    </text>
-                  </g>
-                );
-              })}
-            </svg>
-          </div>
+          {floorPlanSvgMarkup ? (
+            <div
+              className="border rounded-xl overflow-hidden bg-white [&>svg]:block [&>svg]:h-auto [&>svg]:w-full"
+              aria-label="Canonical floor plan"
+              dangerouslySetInnerHTML={{ __html: floorPlanSvgMarkup }}
+            />
+          ) : (
+            <div className="rounded-xl border border-red-300 bg-red-50 p-5 text-sm text-red-900" role="alert">
+              <strong>Canonical floor plan unavailable.</strong>{' '}
+              Close Print Preview and reopen it after the Design Studio canvas finishes rendering. No simplified substitute is shown because it could misrepresent the venue setup.
+            </div>
+          )}
         </div>
 
         <div className="mb-10">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4">Seating Chart</h3>
-
+          <h3 className="text-xl font-semibold text-gray-900 mb-4">Table Setup</h3>
+          <p className="mb-4 text-sm text-gray-600">
+            Operational seat configuration only. Guest assignments are managed in the couple-facing portal.
+          </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {tables.map((table) => {
-              const spec = tableSpecs.find((s) => s.id === table.specId);
-              const tableGuests = guests.filter((g) => table.guests.includes(g.id));
-
+              const spec = tableSpecs.find((candidate) => candidate.id === table.specId);
+              const configuredSeats = tableCapacity(table);
+              const linen = getLinenColors().find((color) => color.id === (table.linenColor || 'white'));
               return (
                 <div key={table.id} className="rounded-lg border p-4 bg-white">
-                  <div className="flex items-center justify-between gap-3">
+                  <h4 className="font-semibold text-gray-900">{table.label}</h4>
+                  <p className="mt-1 text-sm text-gray-600">{spec?.name || 'Unknown Table'}</p>
+                  <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
                     <div>
-                      <h4 className="font-semibold text-gray-900">{table.label}</h4>
-                      <p className="text-sm text-gray-500">
-                        {spec?.name || 'Unknown Table'} • {tableGuests.length}/
-                        {tableCapacity(table)} seats
-                      </p>
+                      <dt className="text-xs uppercase tracking-wide text-gray-500">Configured seats</dt>
+                      <dd className="mt-1 font-semibold text-gray-900">{configuredSeats}</dd>
                     </div>
-                  </div>
-
-                  {tableGuests.length > 0 ? (
-                    <ul className="mt-3 space-y-1 text-sm text-gray-700">
-                      {tableGuests.map((guest) => (
-                        <li key={guest.id}>• {guest.name}{guestNotes(guest)}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-3 text-sm text-gray-400">No guests assigned</p>
-                  )}
+                    <div>
+                      <dt className="text-xs uppercase tracking-wide text-gray-500">Linen</dt>
+                      <dd className="mt-1 font-semibold text-gray-900">
+                        {table.hasLinen === false ? 'None' : (linen?.name || table.linenColor || 'White')}
+                      </dd>
+                    </div>
+                  </dl>
                 </div>
               );
             })}
           </div>
         </div>
-
-        {guests.filter((g) => !g.tableId).length > 0 && (
-          <div className="mb-10">
-            <h3 className="text-xl font-semibold text-gray-900 mb-4">Unassigned Guests</h3>
-            <div className="rounded-lg border p-4 bg-white">
-              <ul className="space-y-1 text-sm text-gray-700">
-                {guests
-                  .filter((g) => !g.tableId)
-                  .map((guest) => (
-                    <li key={guest.id}>• {guest.name}{guestNotes(guest)}</li>
-                  ))}
-              </ul>
-            </div>
-          </div>
-        )}
 
         {showRoomSetupChecklist && (
           <div className="mb-10 page-break">

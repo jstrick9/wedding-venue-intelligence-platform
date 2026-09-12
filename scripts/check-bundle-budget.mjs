@@ -14,9 +14,12 @@
  *   node scripts/check-bundle-budget.mjs single   # after `npm run build`
  *   node scripts/check-bundle-budget.mjs split    # after `npm run build:split`
  *
- * Budgets are bytes. Current HEAD sizes (2026-08-31):
- *   single-file: dist/index.html  556.94 kB gzip  (budget 620 kB)
- *   split build: largest chunk    751.57 kB raw   (budget 820 kB)
+ * Budgets are bytes. Current Review #280 sizes (2026-09-11):
+ *   single-file: dist/index.html  631.52 kB gzip  (budget 650 kB)
+ *   split build: largest chunk    735.37 kB raw   (budget 820 kB)
+ * The single-file ratchet intentionally accounts for Design Studio geometry,
+ * guided identity repair, and catalog revision/replacement safeguards added in
+ * Review #280; it retains roughly 18 kB of gzip headroom.
  */
 
 import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
@@ -25,7 +28,7 @@ import { gzipSync } from 'node:zlib';
 
 export const BUDGETS = {
   /** Max gzipped size of the single-file dist/index.html. */
-  singleFileGzipBytes: 620 * 1024,
+  singleFileGzipBytes: 650 * 1024,
   /** Max raw size of any single chunk in the split build. */
   maxChunkRawBytes: 820 * 1024,
 };

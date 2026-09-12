@@ -11,9 +11,12 @@ import {
   LayoutTemplate,
   PlacedTable,
   PlacedFixture,
+  PlacedDecor,
+  CeremonyChairRow,
   PatternColors,
   RectangularChairLayout,
   ChairSpec,
+  DecorItem,
   User,
   EventQuestion,
   EventQuestionAnswerType,
@@ -21,7 +24,9 @@ import {
 } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { DrawingTool } from './DrawingTool';
-import { CustomVenueBuilder } from './CustomVenueBuilder';
+import { VenueGeometryEditor } from './VenueGeometryEditor';
+import type { GeometryImpactSource } from '../utils/venueGeometryImpact';
+import { mergeVenueGeometry, venueGeometrySignature } from '../utils/venueGeometry';
 import { LodgingBuilder } from './LodgingBuilder';
 import { WelcomeModal } from './WelcomeModal';
 import ModalDialog from './ModalDialog';
@@ -43,6 +48,7 @@ import { WallStyle } from '../types';
 import {
   getVenues,
   setVenues,
+  getSavedLayouts,
   getTableSpecs,
   setTableSpecs,
   getFixtureTypes,
@@ -72,6 +78,28 @@ import { canAccessAdminPanel } from '../utils/permissions';
 import { useRBAC } from '../hooks/useRBAC';
 import { createPasswordRecord } from '../utils/auth';
 import { normalizeEmail, normalizeUsPhone } from '../utils/contactQuality';
+import {
+  catalogReplacementCompatibilityIssue,
+  collectCatalogLayoutSources,
+  summarizeCatalogReferences,
+  type CatalogDefinition,
+  type CatalogKind,
+  type CatalogReferenceSummary,
+} from '../utils/catalogReferences';
+import {
+  reviewCatalogReplacement,
+  type CatalogReplacementReview,
+} from '../utils/catalogReplacementReview';
+import { applyCatalogReplacementToStoredData } from '../utils/catalogLifecycle';
+import { CatalogLifecycleDialog } from './CatalogLifecycleDialog';
+import {
+  catalogPhysicalChanges,
+  createCatalogRevision,
+  type CatalogPhysicalChange,
+} from '../utils/catalogRevision';
+import { CatalogRevisionDialog } from './CatalogRevisionDialog';
+import { createEntityId } from '../utils/entityId';
+import { catalogFamilyWithMultipleActiveMembers, changedHistoricalCatalogMember } from '../utils/catalogFamily';
 
 import { VenueManagement } from './admin/VenueManagement';
 import { SeatingAndLinensManagement } from './admin/SeatingAndLinensManagement';
@@ -158,6 +186,8 @@ export interface AdminPanelProps {
   currentLayout?: {
     tables: PlacedTable[];
     fixtures: PlacedFixture[];
+    decor?: PlacedDecor[];
+    ceremonyRows?: CeremonyChairRow[];
     venueId: string;
     category?: LayoutCategory;
   };
@@ -167,6 +197,13 @@ export interface AdminPanelProps {
   inline?: boolean;
   /** Opens the dedicated full-venue map designer module in the Layout Studio. */
   onOpenVenueMap?: () => void;
+  /** Applies a reviewed catalog replacement to the unsaved in-memory studio layout. */
+  onReplaceWorkingCatalogReferences?: (
+    kind: CatalogKind,
+    oldId: string,
+    replacementId: string,
+    options: { oldTableSpec?: TableSpec; incompatibleArrangementIds?: string[] },
+  ) => void;
 }
 
 const shapeOptions: ShapeType[] = ['circle', 'rectangle', 'triangle', 'semicircle', 'oval', 'hexagon', 'octagon', 'polygon'];
@@ -186,6 +223,9 @@ const defaultPatternColors: Record<PatternType, PatternColors> = {
   carpet: { color1: '#8B4513', color2: '#654321' },
 };
 
+const EVENT_ROLES_STORAGE_KEY = STORAGE_KEYS.EVENT_ROLES;
+const EVENT_QUESTIONS_STORAGE_KEY = STORAGE_KEYS.EVENT_QUESTIONS;
+
 const DEFAULT_EVENT_ROLES = [
   'Bride',
   'Groom',
@@ -202,11 +242,17 @@ type AdminDialogState = AdminDialogOptions & {
   onConfirm?: () => void | Promise<void>;
 };
 
-export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layoutState, inline = false, onOpenVenueMap }: AdminPanelProps) {
+export function AdminPanel({
+  onClose,
+  currentLayout,
+  onLoadTemplateForEdit,
+  layoutState,
+  inline = false,
+  onOpenVenueMap,
+  onReplaceWorkingCatalogReferences,
+}: AdminPanelProps) {
   const { createUser, deleteUser, getAllUsers, user, isAdmin, organizationId } = useAuth();
   const canAccessThisPanel = canAccessAdminPanel(user);
-  const EVENT_ROLES_STORAGE_KEY = STORAGE_KEYS.EVENT_ROLES;
-  const EVENT_QUESTIONS_STORAGE_KEY = STORAGE_KEYS.EVENT_QUESTIONS;
 
   // Remember the last-visited admin section so reopening the panel returns to it.
   const [activeTab, setActiveTab] = useState<string>(
@@ -311,6 +357,18 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
   const [decorCategories, setDecorCategoriesState] = useState(() => getDecorCategories());
   const [decorArrangements, setDecorArrangementsState] = useState(() => getDecorArrangements());
   const [decorPackages, setDecorPackagesState] = useState(() => getDecorPackages());
+  const [pendingCatalogRemoval, setPendingCatalogRemoval] = useState<{
+    kind: CatalogKind;
+    definition: CatalogDefinition;
+    summary: CatalogReferenceSummary;
+  } | null>(null);
+  const [pendingCatalogRevision, setPendingCatalogRevision] = useState<{
+    kind: CatalogKind;
+    source: CatalogDefinition;
+    proposed: CatalogDefinition;
+    summary: CatalogReferenceSummary;
+    changes: CatalogPhysicalChange[];
+  } | null>(null);
 
   const [newUser, setNewUser] = useState({
     username: '',
@@ -542,8 +600,123 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
   };
 
   const handleSaveVenues = (updated: Venue[]) => { setVenues(updated); setVenuesState(updated); showSuccess('Venues saved!'); };
-  const handleSaveTables = (updated: TableSpec[]) => { setTableSpecs(updated); setTableSpecsState(updated); showSuccess('Tables saved!'); };
-  const handleSaveFixtures = (updated: FixtureType[]) => { setFixtureTypes(updated); setFixtureTypesState(updated); showSuccess('Fixtures saved!'); };
+
+  const buildCatalogSources = () => collectCatalogLayoutSources({
+    currentLayout,
+    venues: getVenues(),
+    savedLayouts: getSavedLayouts(),
+    templates: getTemplates(),
+    coupleEvents: getCoupleEvents(),
+  });
+
+  const catalogReferenceSummary = (kind: CatalogKind, definitionId: string) =>
+    summarizeCatalogReferences(kind, definitionId, {
+      sources: buildCatalogSources(),
+      tableSpecs: getTableSpecs(),
+      arrangements: getDecorArrangements(),
+    });
+
+  const guardCatalogRemoval = <T extends CatalogDefinition,>(
+    kind: CatalogKind,
+    current: T[],
+    updated: T[],
+    persist: (next: T[]) => void,
+  ) => {
+    const activeConflict = catalogFamilyWithMultipleActiveMembers(updated);
+    if (activeConflict) {
+      showInfo(
+        'Only one catalog revision can be current',
+        `${activeConflict.map((item) => item.name).join(' and ')} belong to the same revision family. Archive the current revision through its reviewed lifecycle before activating another.`,
+        'warning',
+      );
+      return;
+    }
+    const changedHistorical = changedHistoricalCatalogMember(current, updated);
+    if (changedHistorical) {
+      const kindLabel = kind === 'decor' ? 'décor' : kind;
+      showInfo(
+        `Historical ${kindLabel} revision is read-only`,
+        `${changedHistorical.name} is retained for layouts that reference this exact revision. Edit the current active revision instead; migrate layouts only through guided replacement.`,
+        'warning',
+      );
+      return;
+    }
+    const nextIds = new Set(updated.map((item) => item.id));
+    const removed = current.filter((item) => !nextIds.has(item.id));
+    if (removed.length > 0) {
+      if (kind === 'chair' && removed.some((item) => item.id === 'none')) {
+        showInfo(
+          'No Chairs is required',
+          'The reserved No Chairs definition represents explicit zero seating and cannot be archived or deleted.',
+          'warning',
+        );
+        return;
+      }
+      const referenced = removed
+        .map((definition) => ({ definition, summary: catalogReferenceSummary(kind, definition.id) }))
+        .find((candidate) => candidate.summary.totalReferences > 0);
+      if (referenced) {
+        setPendingCatalogRemoval({ kind, ...referenced });
+        return;
+      }
+      persist(updated);
+      return;
+    }
+
+    const physicalEdit = current.map((source) => {
+      const proposed = updated.find((candidate) => candidate.id === source.id);
+      if (!proposed) return null;
+      const changes = catalogPhysicalChanges(kind, source, proposed);
+      return changes.length > 0 ? { source, proposed, changes } : null;
+    }).find((candidate): candidate is {
+      source: T;
+      proposed: T;
+      changes: CatalogPhysicalChange[];
+    } => !!candidate);
+
+    if (physicalEdit) {
+      if (kind === 'chair' && physicalEdit.source.id === 'none') {
+        showInfo(
+          'No Chairs is fixed',
+          'The reserved No Chairs definition must remain zero-sized so explicit zero seating has no physical clearance.',
+          'warning',
+        );
+        return;
+      }
+      const summary = catalogReferenceSummary(kind, physicalEdit.source.id);
+      if (summary.totalReferences > 0) {
+        setPendingCatalogRevision({ kind, ...physicalEdit, summary });
+        return;
+      }
+    }
+    persist(updated);
+  };
+
+  const persistTableSpecs = (updated: TableSpec[]) => {
+    setTableSpecs(updated);
+    setTableSpecsState(updated);
+    showSuccess('Tables saved!');
+  };
+  const persistFixtureTypes = (updated: FixtureType[]) => {
+    setFixtureTypes(updated);
+    setFixtureTypesState(updated);
+    showSuccess('Fixtures saved!');
+  };
+  const persistChairSpecs = (updated: ChairSpec[]) => {
+    setChairSpecs(updated);
+    setChairSpecsState(updated);
+    showSuccess('Chairs saved!');
+  };
+  const persistDecorItems = (updated: DecorItem[]) => {
+    setDecorItems(updated);
+    setDecorItemsState(updated);
+    showSuccess('Décor catalog saved!');
+  };
+
+  const handleSaveTables = (updated: TableSpec[]) =>
+    guardCatalogRemoval('table', tableSpecs, updated, persistTableSpecs);
+  const handleSaveFixtures = (updated: FixtureType[]) =>
+    guardCatalogRemoval('fixture', fixtureTypes, updated, persistFixtureTypes);
   const handleSaveGuidelines = (updated: Guideline[]) => { setGuidelines(updated); setGuidelinesState(updated); showSuccess('Guidelines saved!'); };
   const handleSaveTemplates = (updated: LayoutTemplate[]) => { setTemplates(updated); setTemplatesState(updated); showSuccess('Templates saved!'); };
   const handleSaveLinenColors = (updated: LinenColor[]) => { setLinenColors(updated); setLinenColorsState(updated); showSuccess('Linen colors saved!'); };
@@ -551,6 +724,57 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
   const handleSaveConfig = (updated: Config) => { setConfig(updated); applyRootStyles(updated); showSuccess('Branding saved!'); };
   const handleSaveUsers = (updated: User[]) => { setUsers(updated); setUsersState(updated); showSuccess('Users saved!'); };
   const handleSaveSpacing = (updated: typeof spacingSettings) => { setSpacingSettings(updated); setSpacingSettingsState(updated); showSuccess('Spacing saved!'); };
+
+  const buildVenueGeometrySources = (venue: Venue): GeometryImpactSource[] => {
+    const sources: GeometryImpactSource[] = [];
+    if (currentLayout?.venueId === venue.id) {
+      sources.push({
+        id: `working:${venue.id}`,
+        label: 'Current working layout',
+        kind: 'working',
+        tables: currentLayout.tables,
+        fixtures: currentLayout.fixtures,
+        decor: currentLayout.decor || [],
+        ceremonyRows: currentLayout.ceremonyRows || [],
+      });
+    }
+    if (venue.masterLayout) {
+      sources.push({
+        id: `master:${venue.id}`,
+        label: `Master · ${venue.name}`,
+        kind: 'master',
+        tables: venue.masterLayout.tables || [],
+        fixtures: venue.masterLayout.fixtures || [],
+        decor: venue.masterLayout.decor || [],
+        ceremonyRows: venue.masterLayout.ceremonyRows || [],
+      });
+    }
+    getSavedLayouts().filter((layout) => layout.venueId === venue.id).forEach((layout) => {
+      sources.push({
+        id: `named:${layout.id}`,
+        label: layout.name,
+        kind: 'named',
+        tables: layout.tables || [],
+        fixtures: layout.fixtures || [],
+        decor: layout.decor || [],
+        ceremonyRows: layout.ceremonyRows || [],
+      });
+    });
+    getCoupleEvents().forEach((event) => {
+      const layout = event.spaceLayouts?.[venue.id]?.layout;
+      if (!layout) return;
+      sources.push({
+        id: `couple:${event.id}:${venue.id}`,
+        label: `${event.coupleName}${event.eventDate ? ` · ${event.eventDate}` : ''}`,
+        kind: 'couple',
+        tables: layout.tables || [],
+        fixtures: layout.fixtures || [],
+        decor: layout.decor || [],
+        ceremonyRows: layout.ceremonyRows || [],
+      });
+    });
+    return sources;
+  };
 
   const validateEventQuestion = (q: { text: string; answerType: EventQuestionAnswerType; optionsText: string }): string | null => {
     if (!q.text.trim()) return 'Question text is required.';
@@ -571,7 +795,7 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
       ? newQuestion.optionsText.split(',').map((o) => o.trim()).filter(Boolean)
       : undefined;
     const question: EventQuestion = {
-      id: `eq-${Date.now()}`,
+      id: createEntityId('event-question', eventQuestions.map((question) => question.id)),
       text: newQuestion.text.trim(),
       group: newQuestion.group,
       answerType: newQuestion.answerType,
@@ -860,7 +1084,7 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
       return;
     }
     const newTemplate: LayoutTemplate = {
-      id: `template-${Date.now()}`,
+      id: createEntityId('template', templates.map((template) => template.id)),
       name: 'New Template from Layout',
       description: 'Created from current layout',
       venueId: currentLayout.venueId,
@@ -934,6 +1158,166 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
     const width = Math.max(1, chairsPerRow) * chairWidth + Math.max(0, Math.max(1, chairsPerRow) - 1) * chairGap;
     const height = Math.max(1, rowCount) * chairDepth + Math.max(0, Math.max(1, rowCount) - 1) * Math.max(0.5, rowSpacingFt);
     return { width: Number(width.toFixed(2)), height: Number(height.toFixed(2)) };
+  };
+
+  const catalogDefinitions = (kind: CatalogKind): CatalogDefinition[] => {
+    if (kind === 'table') return getTableSpecs();
+    if (kind === 'fixture') return getFixtureTypes();
+    if (kind === 'chair') return getChairSpecs();
+    return getDecorItems();
+  };
+
+  const archiveCatalogDefinition = (kind: CatalogKind, definitionId: string, close = true) => {
+    if (kind === 'table') {
+      persistTableSpecs(getTableSpecs().map((item) => item.id === definitionId
+        ? { ...item, archived: true }
+        : item));
+    } else if (kind === 'fixture') {
+      persistFixtureTypes(getFixtureTypes().map((item) => item.id === definitionId
+        ? { ...item, archived: true }
+        : item));
+    } else if (kind === 'chair') {
+      persistChairSpecs(getChairSpecs().map((item) => item.id === definitionId
+        ? { ...item, archived: true }
+        : item));
+    } else {
+      persistDecorItems(getDecorItems().map((item) => item.id === definitionId
+        ? { ...item, archived: true }
+        : item));
+    }
+    if (close) setPendingCatalogRemoval(null);
+  };
+
+  const confirmCatalogRevision = () => {
+    if (!pendingCatalogRevision) return;
+    const { kind, source, proposed, changes } = pendingCatalogRevision;
+    const latestDefinitions = catalogDefinitions(kind);
+    const latest = latestDefinitions.find((definition) => definition.id === source.id);
+    if (!latest) {
+      setPendingCatalogRevision(null);
+      showInfo('Revision blocked', 'The source catalog definition no longer exists.', 'warning');
+      return;
+    }
+    if (catalogPhysicalChanges(kind, source, latest).length > 0) {
+      setPendingCatalogRevision(null);
+      showInfo(
+        'Revision conflict',
+        'This catalog definition changed after the revision prompt opened. Review the latest values and try again.',
+        'warning',
+      );
+      return;
+    }
+    const mergedProposal = { ...latest } as CatalogDefinition;
+    changes.forEach((change) => {
+      (mergedProposal as unknown as Record<string, unknown>)[change.field]
+        = (proposed as unknown as Record<string, unknown>)[change.field];
+    });
+    const revisionResult = createCatalogRevision(
+      latest,
+      mergedProposal,
+      latestDefinitions,
+    );
+    const nextDefinitions = [
+      ...latestDefinitions.map((definition) => definition.id === latest.id
+        ? revisionResult.archivedSource
+        : definition),
+      revisionResult.revision,
+    ];
+    if (kind === 'table') {
+      persistTableSpecs(nextDefinitions as TableSpec[]);
+      const revision = revisionResult.revision as TableSpec;
+      if (revision.isSeatingType) {
+        setExpandedSeatingTypes((current) => new Set([...current, revision.id]));
+      } else {
+        setExpandedTables((current) => new Set([...current, revision.id]));
+      }
+    } else if (kind === 'fixture') {
+      persistFixtureTypes(nextDefinitions as FixtureType[]);
+    } else if (kind === 'chair') {
+      persistChairSpecs(nextDefinitions as ChairSpec[]);
+      setExpandedChairs((current) => new Set([...current, revisionResult.revision.id as any]));
+    } else {
+      persistDecorItems(nextDefinitions as DecorItem[]);
+    }
+    setPendingCatalogRevision(null);
+    showSuccess(`${revisionResult.revision.name} revision ${revisionResult.revision.catalogRevision} created. Existing layouts remain on the archived source.`);
+  };
+
+  const replacementCandidates = pendingCatalogRemoval
+    ? catalogDefinitions(pendingCatalogRemoval.kind).filter((candidate) =>
+        candidate.id !== pendingCatalogRemoval.definition.id
+        && !candidate.archived
+        && !catalogReplacementCompatibilityIssue(
+          pendingCatalogRemoval.kind,
+          pendingCatalogRemoval.definition,
+          candidate,
+        ))
+    : [];
+
+  const buildCatalogReplacementReview = (replacementId: string): CatalogReplacementReview => {
+    if (!pendingCatalogRemoval) {
+      return {
+        blockers: [{ sourceId: 'catalog', sourceLabel: 'Catalog', message: 'The deletion request is no longer active.' }],
+        warnings: [],
+        incompatibleArrangementIds: [],
+        affectedSourceIds: [],
+        affectedInstances: 0,
+      };
+    }
+    const replacement = catalogDefinitions(pendingCatalogRemoval.kind)
+      .find((candidate) => candidate.id === replacementId);
+    if (!replacement) {
+      return {
+        blockers: [{ sourceId: 'catalog', sourceLabel: 'Catalog', message: 'The selected replacement no longer exists.' }],
+        warnings: [],
+        incompatibleArrangementIds: [],
+        affectedSourceIds: [],
+        affectedInstances: 0,
+      };
+    }
+    return reviewCatalogReplacement({
+      kind: pendingCatalogRemoval.kind,
+      oldId: pendingCatalogRemoval.definition.id,
+      replacementId,
+      sourceDefinition: pendingCatalogRemoval.definition,
+      replacementDefinition: replacement,
+      sources: buildCatalogSources(),
+      venues: getVenues(),
+      tableSpecs: getTableSpecs(),
+      fixtureTypes: getFixtureTypes(),
+      chairSpecs: getChairSpecs(),
+      decorItems: getDecorItems(),
+      arrangements: getDecorArrangements(),
+    });
+  };
+
+  const applyReviewedCatalogReplacement = (
+    replacementId: string,
+    review: CatalogReplacementReview,
+  ) => {
+    if (!pendingCatalogRemoval || review.blockers.length > 0) return;
+    const { kind, definition } = pendingCatalogRemoval;
+    const options = {
+      oldTableSpec: kind === 'table' ? definition as TableSpec : undefined,
+      incompatibleArrangementIds: review.incompatibleArrangementIds,
+    };
+    const result = applyCatalogReplacementToStoredData(
+      kind,
+      definition.id,
+      replacementId,
+      options,
+    );
+    onReplaceWorkingCatalogReferences?.(kind, definition.id, replacementId, options);
+    archiveCatalogDefinition(kind, definition.id, false);
+    setTableSpecsState(getTableSpecs());
+    setFixtureTypesState(getFixtureTypes());
+    setChairSpecsState(getChairSpecs());
+    setDecorItemsState(getDecorItems());
+    setDecorArrangementsState(getDecorArrangements());
+    setPendingCatalogRemoval(null);
+    showSuccess(
+      `Replacement applied to ${result.persistentLayoutsUpdated + (currentLayout ? 1 : 0)} reviewed layout source${result.persistentLayoutsUpdated === 0 && !currentLayout ? '' : 's'}. The original remains archived.`,
+    );
   };
 
   if (!canAccessThisPanel) {
@@ -1190,7 +1574,8 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
       props: {
         config,
         decorItems,
-        setDecorItems: (items: any[]) => { setDecorItems(items); setDecorItemsState(items); },
+        setDecorItems: (items: DecorItem[]) =>
+          guardCatalogRemoval('decor', decorItems, items, persistDecorItems),
         decorCategories,
         setDecorCategories: (categories: any[]) => { setDecorCategories(categories); setDecorCategoriesState(categories); },
         decorArrangements,
@@ -1615,6 +2000,34 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
           </ModalDialog>
         )}
 
+        {pendingCatalogRevision && (
+          <CatalogRevisionDialog
+            kind={pendingCatalogRevision.kind}
+            source={pendingCatalogRevision.source}
+            proposed={pendingCatalogRevision.proposed}
+            summary={pendingCatalogRevision.summary}
+            changes={pendingCatalogRevision.changes}
+            onConfirm={confirmCatalogRevision}
+            onClose={() => setPendingCatalogRevision(null)}
+          />
+        )}
+
+        {pendingCatalogRemoval && (
+          <CatalogLifecycleDialog
+            kind={pendingCatalogRemoval.kind}
+            definition={pendingCatalogRemoval.definition}
+            summary={pendingCatalogRemoval.summary}
+            candidates={replacementCandidates}
+            reviewReplacement={buildCatalogReplacementReview}
+            onArchive={() => archiveCatalogDefinition(
+              pendingCatalogRemoval.kind,
+              pendingCatalogRemoval.definition.id,
+            )}
+            onReplace={applyReviewedCatalogReplacement}
+            onClose={() => setPendingCatalogRemoval(null)}
+          />
+        )}
+
         <input
           id="admin-image-upload"
           ref={imageUploadInputRef}
@@ -1632,12 +2045,20 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
         )}
 
         {customShapeVenueId && venues.find((v) => v.id === customShapeVenueId) && (
-          <CustomVenueBuilder
+          <VenueGeometryEditor
             venue={venues.find((v) => v.id === customShapeVenueId)!}
+            sources={buildVenueGeometrySources(venues.find((v) => v.id === customShapeVenueId)!)}
             onClose={() => setCustomShapeVenueId(null)}
-            onSave={(points) => {
-              const customPath = points.length >= 3 ? `M ${points.map((p, i) => `${i === 0 ? '' : 'L '}${p.x} ${p.y}`).join(' ')} Z` : undefined;
-              handleSaveVenues(venues.map((v) => v.id === customShapeVenueId ? { ...v, shape: 'custom', shapePoints: points, customPath, isCustomShape: true } : v));
+            onApply={(nextVenue, baselineGeometrySignature) => {
+              const latestVenues = getVenues();
+              const latestVenue = latestVenues.find((venue) => venue.id === customShapeVenueId);
+              if (!latestVenue) throw new Error('This venue no longer exists. The geometry draft was not applied.');
+              if (venueGeometrySignature(latestVenue) !== baselineGeometrySignature) {
+                throw new Error('Venue geometry changed after this draft opened. Close and reopen the editor before applying.');
+              }
+              const mergedVenue = mergeVenueGeometry(latestVenue, nextVenue);
+              handleSaveVenues(latestVenues.map((venue) =>
+                venue.id === customShapeVenueId ? mergedVenue : venue));
               setCustomShapeVenueId(null);
             }}
           />
@@ -1660,7 +2081,7 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
             onSave={(payload) => {
               const { imageDataUrl, name, fixtureType, objects, drawingWidth, drawingHeight } = payload;
               const newFixture: FixtureType = {
-                id: `fixture-custom-${Date.now()}`,
+                id: createEntityId('fixture-custom', fixtureTypes.map((fixture) => fixture.id)),
                 name: name || (fixtureType === 'architectural' ? 'Custom Landscape Feature' : 'Custom Venue Fixture'),
                 shape: 'custom',
                 width: fixtureType === 'architectural' ? 10 : 4,
@@ -1686,8 +2107,6 @@ export function AdminPanel({ onClose, currentLayout, onLoadTemplateForEdit, layo
   );
 
   function handleSaveChairs(updated: ChairSpec[]) {
-    setChairSpecs(updated);
-    setChairSpecsState(updated);
-    showSuccess('Chairs saved!');
+    guardCatalogRemoval('chair', chairSpecs, updated, persistChairSpecs);
   }
 }

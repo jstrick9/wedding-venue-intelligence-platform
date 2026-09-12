@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import type {
   ChangeEvent,
   DragEvent,
@@ -32,7 +32,9 @@ import SafeImage from './SafeImage';
 import { showToast } from './Toast';
 import { ConfirmDialog } from './ConfirmDialog';
 import { emit, on } from '../utils/appEvents';
-import { countTableUsage, countFixtureUsage, inventoryState } from '../utils/inventoryUsage';
+import { inventoryState } from '../utils/inventoryUsage';
+import { catalogFamilyIds, catalogFamilyInventory } from '../utils/catalogFamily';
+import { configuredChairType, tableSeatCount } from '../utils/layoutSeating';
 
 interface DragItem {
   type: 'table' | 'fixture' | 'arrangement';
@@ -61,7 +63,10 @@ export interface SidebarProps {
     isExterior?: boolean,
   ) => void;
   onDragEnd: () => void;
+  onCancelPlacement?: () => void;
   currentDragItem: DragItem | null;
+  keepAdding?: boolean;
+  onKeepAddingChange?: (keepAdding: boolean) => void;
   onClearLayout: () => void;
   isAdmin: boolean;
   currentUser?: User | null;
@@ -72,6 +77,7 @@ export interface SidebarProps {
   venueHeight: number;
   canvasWidth?: number;
   canvasHeight?: number;
+  onEditVenueGeometry?: () => void;
   onResetView: () => void;
   onResetToVenue?: () => void;
   onResetToCanvas?: () => void;
@@ -98,7 +104,10 @@ export function Sidebar({
   onZoomChange,
   onDragStart,
   onDragEnd,
+  onCancelPlacement,
   currentDragItem,
+  keepAdding = false,
+  onKeepAddingChange,
   onClearLayout,
   isAdmin,
   currentUser,
@@ -108,6 +117,7 @@ export function Sidebar({
   venueHeight,
   canvasWidth,
   canvasHeight,
+  onEditVenueGeometry,
   onResetView,
   onResetToVenue,
   onResetToCanvas,
@@ -140,6 +150,7 @@ export function Sidebar({
   const [catalogSearch, setCatalogSearch] = useState('');
   const [catalogSearchOpen, setCatalogSearchOpen] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
 
   const config = useBrandingConfig();
   const normalizedCatalogSearch = catalogSearch.trim().toLowerCase();
@@ -168,6 +179,10 @@ export function Sidebar({
   useEffect(() => {
     setZoomInput(String(Math.round(zoom * 100)));
   }, [zoom]);
+
+  useEffect(() => {
+    if (contentScrollRef.current) contentScrollRef.current.scrollTop = 0;
+  }, [activeSection]);
 
   const handleMouseDown = () => {
     setIsResizing(true);
@@ -334,6 +349,7 @@ export function Sidebar({
       t.venueCategories.includes(currentVenueCategory as any);
 
     return (
+      !t.archived &&
       categoryAllowed &&
       canUseTableSpec(currentUser, t) &&
       matchesCatalogSearch(t.name, [t.shape, t.isSeatingType ? 'seating' : 'table'])
@@ -349,6 +365,7 @@ export function Sidebar({
       f.venueCategories.includes(currentVenueCategory as any);
 
     return (
+      !f.archived &&
       isVenueFixture &&
       categoryAllowed &&
       canSeeFixtureType(currentUser, f) &&
@@ -358,27 +375,31 @@ export function Sidebar({
 
   // Distinguish "no catalog items configured" from "search/category filtered out"
   // so the empty state guides the right next action.
-  const catalogHasNoTables = tableSpecs.length === 0;
-  const catalogHasNoVenueFixtures = fixtureTypes.filter((f) => f.category !== 'exterior' && f.category !== 'lodging').length === 0;
+  const catalogHasNoTables = tableSpecs.every((spec) => spec.archived);
+  const catalogHasNoVenueFixtures = fixtureTypes
+    .filter((fixture) => !fixture.archived)
+    .every((fixture) => fixture.category === 'exterior' || fixture.category === 'lodging');
 
   const lodgingFixtures = fixtureTypes.filter((f) =>
-    f.category === 'lodging' && matchesCatalogSearch(f.name, [f.category || '', f.icon || '']),
+    !f.archived && f.category === 'lodging'
+      && matchesCatalogSearch(f.name, [f.category || '', f.icon || '']),
   );
   const exteriorFixtures = fixtureTypes.filter((f) =>
-    f.category === 'exterior' && matchesCatalogSearch(f.name, [f.category || '', f.icon || '']),
+    !f.archived && f.category === 'exterior'
+      && matchesCatalogSearch(f.name, [f.category || '', f.icon || '']),
   );
   // Pre-compute chair usage for all items (optimization)
   const chairUsageMap = useMemo(() => {
     const usage: Record<string, number> = {};
   
-    placedTables.forEach((t) => {
-      if (t.showChairs && t.chairType && t.chairType !== 'none') {
-        const chairCount =
-          t.chairCount ||
-          t.customCapacity ||
-          tableSpecs.find((ts) => ts.id === t.specId)?.capacity ||
-          0;
-        usage[t.chairType] = (usage[t.chairType] || 0) + chairCount;
+    placedTables.forEach((table) => {
+      const tableSpec = tableSpecs.find((candidate) => candidate.id === table.specId);
+      const chairType = configuredChairType(table, tableSpec);
+      const chairCount = tableSeatCount(table, tableSpec);
+      // Hiding graphics is visual only; configured physical chairs still consume
+      // inventory. Explicit zero and the No Chairs sentinel consume none.
+      if (chairCount > 0 && chairType !== 'none') {
+        usage[chairType] = (usage[chairType] || 0) + chairCount;
       }
     });
   
@@ -388,7 +409,7 @@ export function Sidebar({
   if (collapsed) {
     return (
       <div
-        className="w-12 flex flex-col items-center py-4 shadow-lg"
+        className="w-12 h-full min-h-0 flex flex-col items-center py-4 shadow-lg"
         style={{ backgroundColor: config.primaryColor }}
       >
         <button
@@ -438,27 +459,38 @@ export function Sidebar({
         ? canUseTableSpec(currentUser, item as TableSpec)
         : canPlaceFixtureType(currentUser, item as FixtureType);
 
-    const totalInventory = item.inventoryCount;
-    const usedCount =
-      type === 'table'
-        ? countTableUsage(placedTables, item.id)
-        : countFixtureUsage(placedFixtures, item.id, !!isExterior);
+    const catalog = type === 'table' ? tableSpecs : fixtureTypes;
+    const familyIds = catalogFamilyIds(catalog as any[], item as any);
+    const totalInventory = catalogFamilyInventory(catalog as any[], item as any);
+    const usedCount = type === 'table'
+      ? placedTables.filter((placed) => familyIds.has(placed.specId)).length
+      : placedFixtures.filter((placed) =>
+          familyIds.has(placed.specId)
+            && (isExterior ? placed.isExterior : !placed.isExterior)).length;
     const { remaining: remainingInventory, outOfStock: isOutOfStock } = inventoryState(
       usedCount,
       totalInventory,
     );
 
+    const chairCatalog = getChairSpecs();
     const chairUsageInfo = type === 'table'
-      ? getChairSpecs()
-          .filter((c) => c.inventoryCount !== undefined && c.id !== 'none')
-          .map((c) => ({
-            chairId: c.id,
-            used: chairUsageMap[c.id] || 0,
-            total: c.inventoryCount,
-            remaining: c.inventoryCount !== undefined
-              ? c.inventoryCount - (chairUsageMap[c.id] || 0)
-              : undefined,
-          }))
+      ? chairCatalog
+          .filter((chair) => !chair.archived && chair.id !== 'none'
+            && catalogFamilyInventory(chairCatalog, chair) !== undefined)
+          .map((chair) => {
+            const familyIdsForChair = catalogFamilyIds(chairCatalog, chair);
+            const used = [...familyIdsForChair].reduce(
+              (total, chairId) => total + (chairUsageMap[chairId] || 0),
+              0,
+            );
+            const total = catalogFamilyInventory(chairCatalog, chair);
+            return {
+              chairId: chair.id,
+              used,
+              total,
+              remaining: total !== undefined ? total - used : undefined,
+            };
+          })
       : [];
 
     const handleDragStartEvent = (e: DragEvent<HTMLDivElement>) => {
@@ -498,7 +530,7 @@ export function Sidebar({
       }
 
       if (currentDragItem?.specId === item.id && currentDragItem?.type === type) {
-        onDragEnd();
+        (onCancelPlacement || onDragEnd)();
       } else {
         onDragStart(type, item.id, isExterior);
       }
@@ -507,7 +539,7 @@ export function Sidebar({
     return (
       <div
         key={item.id}
-        draggable={!isOutOfStock}
+        draggable={!isOutOfStock && isAllowedToPlace}
         onDragStart={handleDragStartEvent}
         onDragEnd={handleDragEndEvent}
         onClick={handleClick}
@@ -552,7 +584,7 @@ export function Sidebar({
                 </span>
               )}
 
-              {type === 'table' && item.capacity && (
+              {type === 'table' && item.capacity !== undefined && (
                 <span
                   className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded font-medium"
                   style={{
@@ -560,10 +592,14 @@ export function Sidebar({
                     color: config.primaryColor || '#4A1942',
                   }}
                 >
-                  🪑{' '}
-                  {item.isSeatingType
-                    ? item.capacity * Math.max(1, item.seatingRowCount || 1)
-                    : item.capacity}
+                  {item.capacity === 0 ? 'Standing · 0 seats' : (
+                    <>
+                      🪑{' '}
+                      {item.isSeatingType
+                        ? item.capacity * Math.max(1, item.seatingRowCount || 1)
+                        : item.capacity}
+                    </>
+                  )}
                 </span>
               )}
             </div>
@@ -587,6 +623,20 @@ export function Sidebar({
           </div>
 
           <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleClick();
+              }}
+              aria-pressed={isSelected}
+              disabled={isOutOfStock || !isAllowedToPlace}
+              aria-label={`${isSelected ? 'Cancel placement of' : 'Place'} ${item.name}`}
+              title={!isAllowedToPlace ? 'You do not have permission to place this item' : isOutOfStock ? 'Out of inventory' : undefined}
+              className={`rounded px-2 py-1 text-[10px] font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 disabled:cursor-not-allowed disabled:opacity-50 ${isSelected ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700 hover:bg-purple-100 hover:text-purple-800'}`}
+            >
+              {isSelected ? 'Cancel' : 'Place'}
+            </button>
             {item.imageUrl && (
               <button
                 onClick={(e) => {
@@ -637,10 +687,10 @@ export function Sidebar({
 
   const sections = [
     { id: 'tables', label: 'Tables/Seating', icon: '🪑' },
-    { id: 'fixtures', label: 'Venue', icon: '🏛️' },
-    { id: 'decor', label: 'Decor', icon: '🎀' },
-    ...(isAdmin ? [{ id: 'lodging', label: 'Lodging', icon: '🛏️' }] : []),
-    ...(isAdmin ? [{ id: 'exterior', label: 'Arch/Land', icon: '🌳' }] : []),
+    { id: 'fixtures', label: 'Venue Items', icon: '🏛️' },
+    { id: 'decor', label: 'Decor Designs', icon: '🎀' },
+    ...(isAdmin ? [{ id: 'lodging', label: 'Lodging Items', icon: '🛏️' }] : []),
+    ...(isAdmin ? [{ id: 'exterior', label: 'Arch/Landscape Items', icon: '🌳' }] : []),
     { id: 'settings', label: 'Settings', icon: '⚙️' },
     { id: 'tips', label: 'Tips', icon: '💡' },
   ];
@@ -652,13 +702,24 @@ export function Sidebar({
     lodging: 'Find a lodging fixture',
     exterior: 'Find an exterior feature',
   };
-  const matchingDecorArrangements = getDecorArrangements().filter((arr) =>
+  const activeDecorItemIds = new Set(getDecorItems()
+    .filter((item) => !item.archived)
+    .map((item) => item.id));
+  const activeBaseSpecIds = new Set([
+    ...tableSpecs.filter((item) => !item.archived).map((item) => item.id),
+    ...fixtureTypes.filter((item) => !item.archived).map((item) => item.id),
+  ]);
+  const availableDecorArrangements = getDecorArrangements().filter((arrangement) =>
+    (!arrangement.baseSpecId || activeBaseSpecIds.has(arrangement.baseSpecId))
+      && arrangement.items.every((item) => activeDecorItemIds.has(item.decorItemId)),
+  );
+  const matchingDecorArrangements = availableDecorArrangements.filter((arr) =>
     matchesCatalogSearch(arr.name, [arr.baseType, String(arr.items.length)]),
   );
 
   return (
     <div
-      className="flex flex-col shadow-xl relative select-none"
+      className="h-full min-h-0 overflow-hidden flex flex-col shadow-xl relative select-none"
       style={{ width, backgroundColor: '#f3f4f6' }}
     >
       {/* Header */}
@@ -692,7 +753,7 @@ export function Sidebar({
       </div>
 
       {/* Section tabs — always show each section's name */}
-      <div className="bg-white border-b border-gray-300 p-2 flex flex-wrap gap-1.5">
+      <div className="shrink-0 bg-white border-b border-gray-300 p-2 flex flex-wrap gap-1.5">
         {sections.map((section) => {
           const active = activeSection === section.id;
           return (
@@ -710,14 +771,43 @@ export function Sidebar({
               type="button"
             >
               <span className="text-sm leading-none">{section.icon}</span>
-              <span className="truncate max-w-[6.5rem]">{section.label}</span>
+              <span>{section.label}</span>
             </button>
           );
         })}
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div
+        ref={contentScrollRef}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain mr-2 p-3 space-y-3"
+        role="region"
+        aria-label={`${sections.find((section) => section.id === activeSection)?.label || 'Layout'} tools`}
+        tabIndex={0}
+      >
+        {currentDragItem && (
+          <div className="rounded-xl border border-purple-300 bg-purple-50 p-3 shadow-sm" role="status">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold text-purple-900">Placement mode active</div>
+                <p className="mt-1 text-[11px] text-purple-700">
+                  {currentDragItem.type === 'arrangement'
+                    ? 'Click a compatible base to apply this design.'
+                    : `Click the canvas to place ${keepAdding ? 'items until you cancel' : 'one item'}.`}{' '}
+                  Escape cancels.
+                </p>
+              </div>
+              <button type="button" onClick={onCancelPlacement || onDragEnd} className="rounded p-1 text-purple-700 hover:bg-purple-100" aria-label="Cancel placement">✕</button>
+            </div>
+            {onKeepAddingChange && (
+              <label className="mt-3 flex items-center gap-2 text-xs font-medium text-purple-900">
+                <input type="checkbox" checked={keepAdding} onChange={(event) => onKeepAddingChange(event.target.checked)} className="h-4 w-4 accent-purple-700" />
+                Keep adding after each successful placement
+              </label>
+            )}
+          </div>
+        )}
+
         {showCatalogSearch && (
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
             <button
@@ -832,10 +922,10 @@ export function Sidebar({
 
               <div className="space-y-3">
                 <p className="text-[10px] text-gray-500 italic px-1">
-                  Drag a saved design onto a table or fixture to apply it instantly.
+                  Drag a saved design onto a compatible base, or click it and then click the base.
                 </p>
 
-                {getDecorArrangements().length === 0 ? (
+                {availableDecorArrangements.length === 0 ? (
                   <div className="text-center py-10 bg-white/50 border-2 border-dashed border-gray-200 rounded-2xl px-4 mx-1">
                     <div className="text-3xl mb-2 opacity-50">🎀</div>
                     <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">
@@ -861,16 +951,38 @@ export function Sidebar({
                       <div
                         key={arr.id}
                         draggable
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={currentDragItem?.type === 'arrangement' && currentDragItem.specId === arr.id}
+                        aria-label={`Place saved design ${arr.name}`}
                         onDragStart={(e) => {
                           const dragData = JSON.stringify({
                             type: 'arrangement',
                             specId: arr.id,
                           });
                           e.dataTransfer.setData('application/json', dragData);
+                          e.dataTransfer.setData('text/plain', dragData);
                           e.dataTransfer.effectAllowed = 'copy';
                           onDragStart('arrangement', arr.id);
                         }}
-                        className="group bg-white border border-gray-200 rounded-2xl p-3 hover:border-[#4A1942] hover:shadow-xl transition-all cursor-grab active:cursor-grabbing flex items-center gap-4 relative overflow-hidden"
+                        onDragEnd={onDragEnd}
+                        onClick={() => {
+                          if (currentDragItem?.type === 'arrangement' && currentDragItem.specId === arr.id) {
+                            (onCancelPlacement || onDragEnd)();
+                          } else {
+                            onDragStart('arrangement', arr.id);
+                          }
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return;
+                          event.preventDefault();
+                          if (currentDragItem?.type === 'arrangement' && currentDragItem.specId === arr.id) {
+                            (onCancelPlacement || onDragEnd)();
+                          } else {
+                            onDragStart('arrangement', arr.id);
+                          }
+                        }}
+                        className={`group rounded-2xl p-3 shadow-sm transition-all cursor-grab active:cursor-grabbing flex items-center gap-4 relative overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-purple-500 ${currentDragItem?.type === 'arrangement' && currentDragItem.specId === arr.id ? 'border-2 border-purple-500 bg-purple-50' : 'border border-gray-200 bg-white hover:border-[#4A1942] hover:shadow-xl'}`}
                       >
                         <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#4A1942] opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: config.primaryColor || '#4A1942' }} />
                         <div className="w-14 h-14 bg-gray-50 rounded-xl flex items-center justify-center text-2xl shadow-inner group-hover:scale-105 transition-transform overflow-hidden border border-gray-100">
@@ -1051,6 +1163,28 @@ export function Sidebar({
               </div>
             </div>
 
+            {onEditVenueGeometry && (
+              <div className="bg-white rounded-lg p-3 border border-purple-200">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-gray-800">🏛️ Venue & Canvas Geometry</div>
+                    <p className="mt-1 text-[11px] text-gray-500">
+                      {venueWidth}' × {venueHeight}' footprint
+                      {canvasWidth && canvasHeight ? ` · ${canvasWidth}' × ${canvasHeight}' canvas` : ''}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-purple-100 px-2 py-1 text-[10px] font-bold text-purple-700">DRAFT + APPLY</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={onEditVenueGeometry}
+                  className="mt-3 w-full rounded-lg border border-purple-300 bg-purple-50 px-3 py-2 text-sm font-semibold text-purple-800 hover:bg-purple-100"
+                >
+                  Edit geometry & review impact
+                </button>
+              </div>
+            )}
+
             {/* Zoom controls */}
             <div className="bg-white rounded-lg p-3 border border-gray-200">
               <label className="block text-xs font-semibold text-gray-700 mb-2">
@@ -1221,14 +1355,38 @@ export function Sidebar({
 
       {/* Resize handle */}
       <div
-        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-gray-400/30 transition-colors"
+        role="separator"
+        aria-label="Resize Layout Tools"
+        aria-orientation="vertical"
+        aria-valuemin={200}
+        aria-valuemax={450}
+        aria-valuenow={Math.round(width)}
+        tabIndex={0}
+        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-gray-400/30 focus:bg-purple-300/60 focus:outline-none transition-colors"
         onMouseDown={handleMouseDown as (e: ReactMouseEvent<HTMLDivElement>) => void}
+        onDoubleClick={() => onWidthChange(280)}
+        onKeyDown={(event) => {
+          const step = event.shiftKey ? 25 : 10;
+          if (event.key === 'ArrowLeft') {
+            event.preventDefault();
+            onWidthChange(Math.max(200, width - step));
+          } else if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            onWidthChange(Math.min(450, width + step));
+          } else if (event.key === 'Home') {
+            event.preventDefault();
+            onWidthChange(200);
+          } else if (event.key === 'End') {
+            event.preventDefault();
+            onWidthChange(450);
+          }
+        }}
       />
 
       <ConfirmDialog
         open={showClearConfirm}
         title="Clear all items"
-        message="Remove every table, fixture, and decor item from this layout? This cannot be undone."
+        message="Remove every table, seating group, fixture, and decor item from this layout? You can restore the cleared layout with Undo."
         confirmLabel="Clear All"
         tone="danger"
         onConfirm={() => {

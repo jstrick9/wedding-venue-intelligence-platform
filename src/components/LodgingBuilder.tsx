@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Venue, LodgingFloor, LodgingRoom, LodgingFurniture, LodgingFurnitureType, Guest } from '../types';
 import { ConfirmDialog } from './ConfirmDialog';
 import { getSavedLayouts } from '../hooks/useLayoutState';
+import { createEntityId } from '../utils/entityId';
 
 interface LodgingBuilderProps {
   venue: Venue;
@@ -82,15 +83,13 @@ export const LodgingBuilder: React.FC<LodgingBuilderProps> = ({ venue, onSave, o
     item.type.toLowerCase().includes(searchFurniture.toLowerCase())
   );
 
-  const snap = (value: number) => (snapToGrid ? Math.round(value / gridSize) * gridSize : value);
-
   const updateFloors = (updater: (prev: LodgingFloor[]) => LodgingFloor[]) => {
     setFloors(prev => updater(prev));
   };
 
   const addFloor = () => {
     const newFloor: LodgingFloor = {
-      id: `f${Date.now()}`,
+      id: createEntityId('floor', floors.map((floor) => floor.id)),
       name: `Floor ${floors.length + 1}`,
       level: floors.length + 1,
       width: venue.width,
@@ -109,7 +108,7 @@ export const LodgingBuilder: React.FC<LodgingBuilderProps> = ({ venue, onSave, o
   const addRoom = () => {
     if (!activeFloor) return;
     const newRoom: LodgingRoom = {
-      id: `room-${Date.now()}`,
+      id: createEntityId('room', floors.flatMap((floor) => floor.rooms.map((room) => room.id))),
       name: `Room ${activeFloor.rooms.length + 1}`,
       width: 14,
       height: 12,
@@ -158,7 +157,7 @@ export const LodgingBuilder: React.FC<LodgingBuilderProps> = ({ venue, onSave, o
     if (!selectedRoom) return;
     const def = furnitureCatalog.find(f => f.type === type) || furnitureCatalog[0];
     const newFurniture: LodgingFurniture = {
-      id: `fur-${Date.now()}`,
+      id: createEntityId('furniture', floors.flatMap((floor) => floor.rooms.flatMap((room) => (room.furniture || []).map((item) => item.id)))),
       type: def.type,
       x: 1,
       y: 1,
@@ -191,25 +190,67 @@ export const LodgingBuilder: React.FC<LodgingBuilderProps> = ({ venue, onSave, o
     const handleMove = (e: MouseEvent) => {
       if (!canvasRef.current || !activeFloor) return;
       const rect = canvasRef.current.getBoundingClientRect();
-      const x = snap(clamp((e.clientX - rect.left) / SCALE - dragOffset.x, 0, activeFloor.width));
-      const y = snap(clamp((e.clientY - rect.top) / SCALE - dragOffset.y, 0, activeFloor.height));
+      const snapCoordinate = (value: number) => (
+        snapToGrid ? Math.round(value / gridSize) * gridSize : value
+      );
+      const x = snapCoordinate(
+        clamp((e.clientX - rect.left) / SCALE - dragOffset.x, 0, activeFloor.width),
+      );
+      const y = snapCoordinate(
+        clamp((e.clientY - rect.top) / SCALE - dragOffset.y, 0, activeFloor.height),
+      );
 
       if (draggingRoomId) {
         const room = activeFloor.rooms.find(r => r.id === draggingRoomId);
         if (!room) return;
-        updateRoom(draggingRoomId, {
-          x: clamp(x, 0, Math.max(0, activeFloor.width - room.width)),
-          y: clamp(y, 0, Math.max(0, activeFloor.height - room.height)),
-        });
+        const roomX = clamp(x, 0, Math.max(0, activeFloor.width - room.width));
+        const roomY = clamp(y, 0, Math.max(0, activeFloor.height - room.height));
+        setFloors((previous) => previous.map((floor) =>
+          floor.id === activeFloor.id
+            ? {
+                ...floor,
+                rooms: floor.rooms.map((candidate) =>
+                  candidate.id === draggingRoomId
+                    ? { ...candidate, x: roomX, y: roomY }
+                    : candidate,
+                ),
+              }
+            : floor,
+        ));
       }
 
       if (draggingFurnitureId && selectedRoom) {
         const item = selectedRoom.furniture?.find(f => f.id === draggingFurnitureId);
         if (!item) return;
-        updateFurniture(draggingFurnitureId, {
-          x: clamp(x - selectedRoom.x, 0, Math.max(0, selectedRoom.width - item.width)),
-          y: clamp(y - selectedRoom.y, 0, Math.max(0, selectedRoom.height - item.height)),
-        });
+        const itemX = clamp(
+          x - selectedRoom.x,
+          0,
+          Math.max(0, selectedRoom.width - item.width),
+        );
+        const itemY = clamp(
+          y - selectedRoom.y,
+          0,
+          Math.max(0, selectedRoom.height - item.height),
+        );
+        setFloors((previous) => previous.map((floor) =>
+          floor.id === activeFloor.id
+            ? {
+                ...floor,
+                rooms: floor.rooms.map((room) =>
+                  room.id === selectedRoom.id
+                    ? {
+                        ...room,
+                        furniture: (room.furniture || []).map((candidate) =>
+                          candidate.id === draggingFurnitureId
+                            ? { ...candidate, x: itemX, y: itemY }
+                            : candidate,
+                        ),
+                      }
+                    : room,
+                ),
+              }
+            : floor,
+        ));
       }
     };
 
@@ -320,7 +361,7 @@ export const LodgingBuilder: React.FC<LodgingBuilderProps> = ({ venue, onSave, o
                   onClick={() => {
                     if (!activeFloor) return;
                     const newRoom: LodgingRoom = {
-                      id: `room-suite-${Date.now()}`,
+                      id: createEntityId('room-suite', floors.flatMap((floor) => floor.rooms.map((room) => room.id))),
                       name: `Suite ${activeFloor.rooms.length + 1}`,
                       width: 18,
                       height: 14,
@@ -344,7 +385,7 @@ export const LodgingBuilder: React.FC<LodgingBuilderProps> = ({ venue, onSave, o
                   onClick={() => {
                     if (!activeFloor) return;
                     const newRoom: LodgingRoom = {
-                      id: `room-bath-${Date.now()}`,
+                      id: createEntityId('room-bath', floors.flatMap((floor) => floor.rooms.map((room) => room.id))),
                       name: `Bathroom ${activeFloor.rooms.length + 1}`,
                       width: 8,
                       height: 6,

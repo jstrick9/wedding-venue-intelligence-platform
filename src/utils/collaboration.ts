@@ -3,6 +3,7 @@ import { STORAGE_KEYS } from '../constants/storageKeys';
 import { STORAGE_VERSIONS } from '../constants/storageVersions';
 import { loadVersionedStorage, saveVersionedStorage } from './storage';
 import { publishCollaborationEvent } from './collaborationChannel';
+import { createEntityId } from './entityId';
 
 export interface RevisionedSavedLayout {
   id: string;
@@ -44,7 +45,14 @@ export function getSavedLayoutDocuments(): RevisionedSavedLayout[] {
       0: (input) =>
         Array.isArray(input)
           ? (input as Array<Partial<RevisionedSavedLayout>>).map((layout) => ({
-              id: layout.id || `saved-${Date.now()}`,
+              id:
+                layout.id ||
+                createEntityId(
+                  'saved',
+                  (input as Array<Partial<RevisionedSavedLayout>>)
+                    .map((candidate) => candidate.id)
+                    .filter((id): id is string => Boolean(id)),
+                ),
               name: layout.name || 'Untitled Layout',
               venueId: layout.venueId || '',
               tables: Array.isArray(layout.tables) ? (layout.tables as PlacedTable[]) : [],
@@ -64,7 +72,14 @@ export function getSavedLayoutDocuments(): RevisionedSavedLayout[] {
       2: (input) =>
         Array.isArray(input)
           ? (input as Array<Partial<RevisionedSavedLayout>>).map((layout) => ({
-              id: layout.id || `saved-${Date.now()}`,
+              id:
+                layout.id ||
+                createEntityId(
+                  'saved',
+                  (input as Array<Partial<RevisionedSavedLayout>>)
+                    .map((candidate) => candidate.id)
+                    .filter((id): id is string => Boolean(id)),
+                ),
               name: layout.name || 'Untitled Layout',
               venueId: layout.venueId || '',
               tables: Array.isArray(layout.tables) ? (layout.tables as PlacedTable[]) : [],

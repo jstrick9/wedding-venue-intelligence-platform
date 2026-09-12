@@ -67,6 +67,7 @@ function renderHeader(overrides: Partial<React.ComponentProps<typeof Header>> = 
       {
         id: 'layout-1',
         name: 'My Layout',
+        venueId: 'v1',
         tables: [],
         fixtures: [],
         decor: [],

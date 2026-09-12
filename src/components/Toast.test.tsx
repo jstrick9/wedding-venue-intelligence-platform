@@ -1,62 +1,68 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { showToast, ToastContainer } from './Toast';
 
-const announceMock = vi.fn();
-
-vi.mock('./LiveRegion', () => ({
-  announce: (message: string) => announceMock(message),
-}));
-
-import { ToastContainer, showToast } from './Toast';
-
-describe('Toast', () => {
+describe('Toast transient collision warnings', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.useFakeTimers();
   });
 
-  it('renders a toast when showToast is called', async () => {
-    render(<ToastContainer />);
-
-    await act(async () => {
-      showToast('Saved successfully', 'success');
+  afterEach(() => {
+    act(() => {
+      vi.runOnlyPendingTimers();
     });
-
-    expect(await screen.findByText('Saved successfully')).toBeInTheDocument();
+    cleanup();
+    vi.useRealTimers();
   });
 
-  it('announces toast messages to the live region bridge', async () => {
+  it('automatically removes a non-dismissible warning after exactly 1.5 seconds', () => {
     render(<ToastContainer />);
 
-    await act(async () => {
-      showToast('Collaboration warning', 'warning');
+    act(() => {
+      showToast('Collision at the west wall', 'warning', { duration: 1500, dismissible: false });
     });
+    expect(screen.getByText('Collision at the west wall')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /dismiss notification/i })).not.toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(announceMock).toHaveBeenCalledWith('Collaboration warning');
+    act(() => {
+      vi.advanceTimersByTime(1499);
     });
+    expect(screen.getByText('Collision at the west wall')).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.queryByText('Collision at the west wall')).not.toBeInTheDocument();
   });
 
-  it('deduplicates identical toasts within the dedupe window', async () => {
+  it('uses the store as the sole owner and dismisses a manual toast immediately', () => {
     render(<ToastContainer />);
 
-    await act(async () => {
-      showToast('Duplicate message', 'info');
-      showToast('Duplicate message', 'info');
+    act(() => {
+      showToast('Saved layout', 'success');
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }));
 
-    const messages = await screen.findAllByText('Duplicate message');
-    expect(messages).toHaveLength(1);
+    expect(screen.queryByText('Saved layout')).not.toBeInTheDocument();
   });
 
-  it('does not deduplicate different toast types for different messages', async () => {
+  it('refreshes the full lifetime when the same warning is repeated', () => {
     render(<ToastContainer />);
 
-    await act(async () => {
-      showToast('First message', 'info');
-      showToast('Second message', 'warning');
+    act(() => {
+      showToast('Collision beside another table', 'warning', { duration: 1500, dismissible: false });
+      vi.advanceTimersByTime(1000);
+      showToast('Collision beside another table', 'warning', { duration: 1500, dismissible: false });
     });
 
-    expect(await screen.findByText('First message')).toBeInTheDocument();
-    expect(await screen.findByText('Second message')).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(1499);
+    });
+    expect(screen.getByText('Collision beside another table')).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.queryByText('Collision beside another table')).not.toBeInTheDocument();
   });
 });

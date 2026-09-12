@@ -641,19 +641,20 @@ function CouplesPortalSession({ coupleToken, venueSlug, onExitPortal }: CouplesP
   // Refresh the chat periodically (and when the tab is opened) so the couple sees new
   // venue messages without having to send one themselves. While the Chat tab is open
   // the couple side is marked as "read" so the venue's unread badge stays accurate.
+  const activeChatEventId = activeTab === 'chat' ? event?.id : undefined;
   useEffect(() => {
-    if (!cloudReadOnlyFallback && activeTab === 'chat' && event) {
-      markCoupleChatRead(event.id, 'couple');
+    if (!cloudReadOnlyFallback && activeChatEventId) {
+      markCoupleChatRead(activeChatEventId, 'couple');
     }
     setMsgTick((t) => t + 1);
     const id = setInterval(() => {
-      if (!cloudReadOnlyFallback && activeTab === 'chat' && event) {
-        markCoupleChatRead(event.id, 'couple');
+      if (!cloudReadOnlyFallback && activeChatEventId) {
+        markCoupleChatRead(activeChatEventId, 'couple');
       }
       setMsgTick((t) => t + 1);
     }, 5000);
     return () => clearInterval(id);
-  }, [activeTab === 'chat', cloudReadOnlyFallback, event?.id]);
+  }, [activeChatEventId, cloudReadOnlyFallback]);
 
   // Auto-scroll the couple chat to the newest message when it updates.
   useEffect(() => {

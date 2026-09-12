@@ -13,14 +13,13 @@ import {
   Venue,
 } from '../types';
 import { isManagedVenueMapImageRef } from './venueMapImageRef';
+import { createEntityId } from './entityId';
 
 /**
  * Pure helpers for the interactive full-venue map designer. Kept dependency-free
  * so the Design Studio can edit the venue map as an interactive canvas (drag /
  * click-to-place / route-drawing) and print/export the resulting "Venue Map".
  */
-
-const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 /** Minimum/maximum map canvas dimensions (abstract map units). */
 export const VENUE_MAP_FRAME_MIN = 20;
@@ -876,7 +875,7 @@ export function addMapPoint(
     ...map,
     points: [
       ...map.points,
-      canonicalizeMapPointKindFields({ ...input, id: uid('pt'), x, y }),
+      canonicalizeMapPointKindFields({ ...input, id: createEntityId('pt', map.points.map((point) => point.id)), x, y }),
     ],
     updatedAt: new Date().toISOString(),
   };
@@ -1599,7 +1598,7 @@ export function addMapRoute(
   );
   if (validPointIds.length < 2 || validPointIds.length > VENUE_MAP_MAX_ROUTE_POINTS) return map;
   const route: VenueMapRoute = {
-    id: uid('route'),
+    id: createEntityId('route', (map.routes || []).map((route) => route.id)),
     name: name.trim() || 'Path',
     pointIds: validPointIds,
     audience: options.audience || 'public',
@@ -1688,7 +1687,7 @@ export function duplicateMapPoint(
   const y = clampCoord(src.y + offset, map.height);
   const copy = canonicalizeMapPointKindFields({
     ...src,
-    id: uid('pt'),
+    id: createEntityId('pt', map.points.map((point) => point.id)),
     x,
     y,
     label: `${src.label} (copy)`,
@@ -1883,10 +1882,15 @@ export function clearMapDrawings(map: VenueMapConfig): VenueMapConfig {
 }
 
 export function addPresetMapZones(map: VenueMapConfig): VenueMapConfig {
-  const now = Date.now();
+  const occupiedIds = (map.drawings || []).map((drawing) => drawing.id);
+  const nextZoneId = (prefix: string) => {
+    const id = createEntityId(prefix, occupiedIds);
+    occupiedIds.push(id);
+    return id;
+  };
   const presets: DrawingObject[] = [
     {
-      id: `zone-ceremony-${now}`,
+      id: nextZoneId('zone-ceremony'),
       type: 'zone',
       x: 10,
       y: 15,
@@ -1899,7 +1903,7 @@ export function addPresetMapZones(map: VenueMapConfig): VenueMapConfig {
       text: '🌳 Ceremony Lawn Zone',
     },
     {
-      id: `zone-parking-${now}`,
+      id: nextZoneId('zone-parking'),
       type: 'zone',
       x: 65,
       y: 55,
@@ -1912,7 +1916,7 @@ export function addPresetMapZones(map: VenueMapConfig): VenueMapConfig {
       text: '🅿️ Main Parking Lot',
     },
     {
-      id: `zone-manor-${now}`,
+      id: nextZoneId('zone-manor'),
       type: 'zone',
       x: 42,
       y: 20,
@@ -1925,7 +1929,7 @@ export function addPresetMapZones(map: VenueMapConfig): VenueMapConfig {
       text: '🏛️ Main Manor Building',
     },
     {
-      id: `zone-gardens-${now}`,
+      id: nextZoneId('zone-gardens'),
       type: 'zone',
       x: 15,
       y: 45,

@@ -1,5 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { checkFixtureCollision, getFixtureBoundingBox, boxesOverlap, validateLayout } from './collisionDetection';
+import {
+  boxesOverlap,
+  checkFixtureCollision,
+  getFixtureBoundingBox,
+  getFixtureFootprintPolygon,
+  validateLayout,
+} from './collisionDetection';
+import { getSpacingSettings } from '../data/venueData';
 
 vi.mock('../hooks/useLayoutState', () => ({
   getFixtureTypes: vi.fn(() => [
@@ -23,6 +30,14 @@ vi.mock('../data/venueData', () => ({
 describe('collisionDetection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getSpacingSettings).mockReturnValue({
+      enableCollisionDetection: true,
+      showCollisionWarnings: true,
+      minItemSpacing: 1,
+      minFixtureSpacing: 4,
+      minWallSpacing: 3,
+      minTableSpacing: 3,
+    });
   });
 
   it('applies fixture spacing only to venue fixtures', () => {
@@ -50,6 +65,30 @@ describe('collisionDetection', () => {
 
     expect(result.collides).toBe(false);
     expect(result.wallError).toBe('');
+  });
+
+  it('disables optional spacing collisions without erasing physical boundary geometry', () => {
+    vi.mocked(getSpacingSettings).mockReturnValue({
+      enableCollisionDetection: false,
+      showCollisionWarnings: false,
+      minItemSpacing: 1,
+      minFixtureSpacing: 4,
+      minWallSpacing: 3,
+      minTableSpacing: 3,
+    });
+
+    const result = checkFixtureCollision(
+      { x: 10, y: 10, specId: 'venue-fixture' },
+      [],
+      [{ id: 'existing', type: 'fixture', x: 10, y: 10, rotation: 0, label: 'Existing', specId: 'venue-fixture' }],
+      { id: 'v1', width: 40, height: 40 } as any,
+    );
+    expect(result.collides).toBe(false);
+
+    const footprint = getFixtureFootprintPolygon({ x: 10, y: 10, specId: 'venue-fixture' });
+    expect(footprint).toHaveLength(4);
+    expect(Math.min(...footprint.map((point) => point.x))).toBe(10);
+    expect(Math.max(...footprint.map((point) => point.x))).toBe(20);
   });
 
   it('detects overlap correctly with epsilon-safe comparison', () => {

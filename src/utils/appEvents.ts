@@ -127,6 +127,7 @@ export interface UndoSnapshot {
   tables: unknown[];
   fixtures: unknown[];
   decor: unknown[];
+  ceremonyRows?: unknown[];
   timestamp: number;
 }
 

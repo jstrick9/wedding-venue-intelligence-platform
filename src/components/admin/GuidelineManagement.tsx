@@ -1,6 +1,7 @@
 import { BrandedSectionHeader, BrandedStatCard, BrandedTips } from './shared/AdminSharedComponents';
 import { Guideline } from '../../types';
 import type { AdminCommonProps } from './AdminTabTypes';
+import { createEntityId } from '../../utils/entityId';
 
 export function GuidelineManagement(props: AdminCommonProps) {
   const {
@@ -61,9 +62,9 @@ export function GuidelineManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: Guideline[] = [
-                        { id: `guideline-${Date.now()}-1`, title: 'Table Spacing', description: 'Maintain 3-4 feet between tables for server access and guest movement.', enabled: true, category: 'spacing' as const, icon: '📏' },
-                        { id: `guideline-${Date.now()}-2`, title: 'Dance Floor Clearance', description: 'Keep at least 5 feet clearance around the dance floor for safety.', enabled: true, category: 'safety' as const, icon: '💃' },
-                        { id: `guideline-${Date.now()}-3`, title: 'Emergency Exits', description: 'Never block emergency exits or fire lanes with tables or fixtures.', enabled: true, category: 'important' as const, icon: '🚨' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Table Spacing', description: 'Maintain 3-4 feet between tables for server access and guest movement.', enabled: true, category: 'spacing' as const, icon: '📏' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Dance Floor Clearance', description: 'Keep at least 5 feet clearance around the dance floor for safety.', enabled: true, category: 'safety' as const, icon: '💃' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Emergency Exits', description: 'Never block emergency exits or fire lanes with tables or fixtures.', enabled: true, category: 'important' as const, icon: '🚨' },
                       ];
                       handleSaveGuidelines([...guidelines, ...presets]);
                     }}
@@ -75,9 +76,9 @@ export function GuidelineManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: Guideline[] = [
-                        { id: `guideline-${Date.now()}-4`, title: 'Head Table Placement', description: 'Position the head table in a prominent location visible to all guests.', enabled: true, category: 'tips' as const, icon: '👑' },
-                        { id: `guideline-${Date.now()}-5`, title: 'Gift Table Location', description: 'Place gift table near the entrance for easy drop-off by guests.', enabled: true, category: 'tips' as const, icon: '🎁' },
-                        { id: `guideline-${Date.now()}-6`, title: 'Photo Booth Space', description: 'Allow 10x10 feet minimum for photo booth setup with backdrop.', enabled: true, category: 'tips' as const, icon: '📸' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Head Table Placement', description: 'Position the head table in a prominent location visible to all guests.', enabled: true, category: 'tips' as const, icon: '👑' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Gift Table Location', description: 'Place gift table near the entrance for easy drop-off by guests.', enabled: true, category: 'tips' as const, icon: '🎁' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Photo Booth Space', description: 'Allow 10x10 feet minimum for photo booth setup with backdrop.', enabled: true, category: 'tips' as const, icon: '📸' },
                       ];
                       handleSaveGuidelines([...guidelines, ...presets]);
                     }}
@@ -89,8 +90,8 @@ export function GuidelineManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: Guideline[] = [
-                        { id: `guideline-${Date.now()}-7`, title: 'ADA Accessibility', description: 'Ensure 36-inch minimum aisle width for wheelchair access.', enabled: true, category: 'important' as const, icon: '♿' },
-                        { id: `guideline-${Date.now()}-8`, title: 'Accessible Seating', description: 'Reserve accessible seating near aisles and exits.', enabled: true, category: 'important' as const, icon: '🪑' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'ADA Accessibility', description: 'Ensure 36-inch minimum aisle width for wheelchair access.', enabled: true, category: 'important' as const, icon: '♿' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Accessible Seating', description: 'Reserve accessible seating near aisles and exits.', enabled: true, category: 'important' as const, icon: '🪑' },
                       ];
                       handleSaveGuidelines([...guidelines, ...presets]);
                     }}
@@ -102,9 +103,9 @@ export function GuidelineManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const presets: Guideline[] = [
-                        { id: `guideline-${Date.now()}-9`, title: 'Buffet Flow', description: 'Create a one-way traffic flow around buffet tables to prevent congestion.', enabled: true, category: 'tips' as const, icon: '🍽️' },
-                        { id: `guideline-${Date.now()}-10`, title: 'Bar Placement', description: 'Position bar away from dance floor to separate drinking and dancing areas.', enabled: true, category: 'tips' as const, icon: '🍸' },
-                        { id: `guideline-${Date.now()}-11`, title: 'Cake Table Visibility', description: 'Place cake table where it can be photographed with good lighting.', enabled: true, category: 'tips' as const, icon: '🎂' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Buffet Flow', description: 'Create a one-way traffic flow around buffet tables to prevent congestion.', enabled: true, category: 'tips' as const, icon: '🍽️' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Bar Placement', description: 'Position bar away from dance floor to separate drinking and dancing areas.', enabled: true, category: 'tips' as const, icon: '🍸' },
+                        { id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)), title: 'Cake Table Visibility', description: 'Place cake table where it can be photographed with good lighting.', enabled: true, category: 'tips' as const, icon: '🎂' },
                       ];
                       handleSaveGuidelines([...guidelines, ...presets]);
                     }}
@@ -147,7 +148,7 @@ export function GuidelineManagement(props: AdminCommonProps) {
                 <button
                   onClick={() => {
                     const newGuideline: Guideline = {
-                      id: `guideline-${Date.now()}`,
+                      id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)),
                       title: 'New Guideline',
                       description: 'Enter your guideline description here...',
                       enabled: true,
@@ -182,7 +183,7 @@ export function GuidelineManagement(props: AdminCommonProps) {
                   <button
                     onClick={() => {
                       const newGuideline: Guideline = {
-                        id: `guideline-${Date.now()}`,
+                        id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)),
                         title: 'My First Guideline',
                         description: 'Enter your guideline description here...',
                         enabled: true,
@@ -376,7 +377,7 @@ export function GuidelineManagement(props: AdminCommonProps) {
                                   onClick={() => {
                                     const duplicated: Guideline = {
                                       ...guideline,
-                                      id: `guideline-${Date.now()}`,
+                                      id: createEntityId('guideline', guidelines.map((guideline) => guideline.id)),
                                       title: `${guideline.title} (Copy)`
                                     };
                                     const newGuidelines = [...guidelines];

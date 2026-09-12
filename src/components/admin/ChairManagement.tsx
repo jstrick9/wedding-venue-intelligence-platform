@@ -3,15 +3,16 @@ import EmojiPicker from '../EmojiPicker';
 import MultiImageUpload from '../MultiImageUpload';
 import { ChairType, ChairSpec } from '../../types';
 import type { AdminCommonProps } from './AdminTabTypes';
+import { createEntityId } from '../../utils/entityId';
+import { catalogFamilyStatus } from '../../utils/catalogFamily';
+import { CatalogRevisionStatus, HistoricalRevisionNotice } from './CatalogRevisionStatus';
 
 export function ChairManagement(props: AdminCommonProps) {
   const {
     config,
-    showSuccess,
     confirmAction,
     chairSpecs,
     setChairSpecs,
-    setChairSpecsState,
     expandedChairs,
     setExpandedChairs,
   } = props;
@@ -50,8 +51,8 @@ export function ChairManagement(props: AdminCommonProps) {
                       const existingNames = chairSpecs.map(c => c.name.toLowerCase());
                       const newChairs = presetChairs
                         .filter(c => !existingNames.includes(c.name.toLowerCase()))
-                        .map((c, i) => ({
-                          id: `chair-${Date.now()}-${i}` as ChairType,
+                        .map((c) => ({
+                          id: createEntityId('chair', chairSpecs.map((item) => item.id)) as ChairType,
                           name: c.name,
                           color: c.color,
                           width: 1.5,
@@ -61,8 +62,6 @@ export function ChairManagement(props: AdminCommonProps) {
                       if (newChairs.length > 0) {
                         const updated = [...chairSpecs, ...newChairs];
                         setChairSpecs(updated);
-                        setChairSpecsState(updated);
-                        showSuccess(`Added ${newChairs.length} Chiavari chairs!`);
                       }
                     }}
                     className="px-2.5 py-1 bg-amber-50 border border-amber-200 text-amber-800 rounded-md text-xs font-medium hover:bg-amber-100 transition-colors"
@@ -80,8 +79,8 @@ export function ChairManagement(props: AdminCommonProps) {
                       const existingNames = chairSpecs.map(c => c.name.toLowerCase());
                       const newChairs = presetChairs
                         .filter(c => !existingNames.includes(c.name.toLowerCase()))
-                        .map((c, i) => ({
-                          id: `chair-${Date.now()}-${i}` as ChairType,
+                        .map((c) => ({
+                          id: createEntityId('chair', chairSpecs.map((item) => item.id)) as ChairType,
                           name: c.name,
                           color: c.color,
                           width: 1.5,
@@ -91,8 +90,6 @@ export function ChairManagement(props: AdminCommonProps) {
                       if (newChairs.length > 0) {
                         const updated = [...chairSpecs, ...newChairs];
                         setChairSpecs(updated);
-                        setChairSpecsState(updated);
-                        showSuccess(`Added ${newChairs.length} Modern chairs!`);
                       }
                     }}
                     className="px-2.5 py-1 bg-blue-50 border border-blue-200 text-blue-700 rounded-md text-xs font-medium hover:bg-blue-100 transition-colors"
@@ -110,8 +107,8 @@ export function ChairManagement(props: AdminCommonProps) {
                       const existingNames = chairSpecs.map(c => c.name.toLowerCase());
                       const newChairs = presetChairs
                         .filter(c => !existingNames.includes(c.name.toLowerCase()))
-                        .map((c, i) => ({
-                          id: `chair-${Date.now()}-${i}` as ChairType,
+                        .map((c) => ({
+                          id: createEntityId('chair', chairSpecs.map((item) => item.id)) as ChairType,
                           name: c.name,
                           color: c.color,
                           width: 1.5,
@@ -121,8 +118,6 @@ export function ChairManagement(props: AdminCommonProps) {
                       if (newChairs.length > 0) {
                         const updated = [...chairSpecs, ...newChairs];
                         setChairSpecs(updated);
-                        setChairSpecsState(updated);
-                        showSuccess(`Added ${newChairs.length} Rustic chairs!`);
                       }
                     }}
                     className="px-2.5 py-1 bg-amber-50 border border-amber-300 text-amber-800 rounded-md text-xs font-medium hover:bg-amber-100 transition-colors"
@@ -140,8 +135,8 @@ export function ChairManagement(props: AdminCommonProps) {
                       const existingNames = chairSpecs.map(c => c.name.toLowerCase());
                       const newChairs = presetChairs
                         .filter(c => !existingNames.includes(c.name.toLowerCase()))
-                        .map((c, i) => ({
-                          id: `chair-${Date.now()}-${i}` as ChairType,
+                        .map((c) => ({
+                          id: createEntityId('chair', chairSpecs.map((item) => item.id)) as ChairType,
                           name: c.name,
                           color: c.color,
                           width: 1.5,
@@ -151,8 +146,6 @@ export function ChairManagement(props: AdminCommonProps) {
                       if (newChairs.length > 0) {
                         const updated = [...chairSpecs, ...newChairs];
                         setChairSpecs(updated);
-                        setChairSpecsState(updated);
-                        showSuccess(`Added ${newChairs.length} Garden chairs!`);
                       }
                     }}
                     className="px-2.5 py-1 bg-pink-50 border border-pink-200 text-pink-700 rounded-md text-xs font-medium hover:bg-pink-100 transition-colors"
@@ -170,8 +163,8 @@ export function ChairManagement(props: AdminCommonProps) {
                       const existingNames = chairSpecs.map(c => c.name.toLowerCase());
                       const newChairs = presetChairs
                         .filter(c => !existingNames.includes(c.name.toLowerCase()))
-                        .map((c, i) => ({
-                          id: `chair-${Date.now()}-${i}` as ChairType,
+                        .map((c) => ({
+                          id: createEntityId('chair', chairSpecs.map((item) => item.id)) as ChairType,
                           name: c.name,
                           color: c.color,
                           width: 1.5,
@@ -181,8 +174,6 @@ export function ChairManagement(props: AdminCommonProps) {
                       if (newChairs.length > 0) {
                         const updated = [...chairSpecs, ...newChairs];
                         setChairSpecs(updated);
-                        setChairSpecsState(updated);
-                        showSuccess(`Added ${newChairs.length} Ceremony chairs!`);
                       }
                     }}
                     className="px-2.5 py-1 bg-green-50 border border-green-200 text-green-700 rounded-md text-xs font-medium hover:bg-green-100 transition-colors"
@@ -220,7 +211,7 @@ export function ChairManagement(props: AdminCommonProps) {
                     type="button"
                     onClick={() => {
                       const newChair: ChairSpec = {
-                        id: `chair-${Date.now()}` as ChairType,
+                        id: createEntityId('chair', chairSpecs.map((item) => item.id)) as ChairType,
                         name: 'New Chair',
                         color: '#FFFFFF',
                         width: 1.5,
@@ -229,9 +220,7 @@ export function ChairManagement(props: AdminCommonProps) {
                       };
                       const updated = [...chairSpecs, newChair];
                       setChairSpecs(updated);
-                      setChairSpecsState(updated);
                       setExpandedChairs(prev => new Set([...prev, newChair.id]));
-                      showSuccess('Chair added!');
                     }}
                     className="btn-primary px-3.5 py-1.5 bg-[#4A1942] hover:bg-[#3b1435] text-white rounded-lg text-xs font-bold transition-colors shadow-sm flex items-center gap-1"
                     style={{ backgroundColor: config.primaryColor }}
@@ -267,7 +256,12 @@ export function ChairManagement(props: AdminCommonProps) {
                             {chair.icon || '🪑'}
                           </div>
                           <div>
-                            <div className="font-bold text-gray-800">{chair.name}</div>
+                            <div className="flex items-center gap-2 font-bold text-gray-800">
+                              <span>{chair.name}</span>
+                              {chair.archived && (
+                                <span className="rounded-full bg-gray-700 px-2 py-0.5 text-[10px] text-white">Archived</span>
+                              )}
+                            </div>
                             <div className="text-xs text-gray-600 flex items-center gap-2">
                               <span>📐 {chair.width}' × {chair.depth}'</span>
                               {chair.inventoryCount !== undefined && (
@@ -276,23 +270,41 @@ export function ChairManagement(props: AdminCommonProps) {
                                 </span>
                               )}
                             </div>
+                            <CatalogRevisionStatus definition={chair} definitions={chairSpecs} compact />
+                            <HistoricalRevisionNotice definition={chair} definitions={chairSpecs} />
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
+                          {chair.archived && !catalogFamilyStatus(chairSpecs, chair).hasActiveSibling && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setChairSpecs(chairSpecs.map((candidate) => candidate.id === chair.id
+                                  ? { ...candidate, archived: false }
+                                  : candidate));
+                              }}
+                              className="rounded-lg bg-white/80 px-2 py-1.5 text-xs font-semibold text-green-700 hover:bg-white"
+                              title="Restore to placement catalog"
+                            >
+                              Restore
+                            </button>
+                          )}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               // Duplicate chair
                               const newChair: ChairSpec = {
                                 ...chair,
-                                id: `chair-${Date.now()}` as ChairType,
-                                name: `${chair.name} (Copy)`
+                                id: createEntityId('chair', chairSpecs.map((item) => item.id)) as ChairType,
+                                name: `${chair.name} (Copy)`,
+                                archived: false,
+                                catalogFamilyId: undefined,
+                                catalogRevision: undefined
                               };
                               const updated = [...chairSpecs, newChair];
                               setChairSpecs(updated);
-                              setChairSpecsState(updated);
                               setExpandedChairs(prev => new Set([...prev, newChair.id]));
-                              showSuccess('Chair duplicated!');
                             }}
                             className="p-1.5 bg-white/80 hover:bg-white rounded-lg text-gray-600 hover:text-blue-600 transition-colors"
                             title="Duplicate"
@@ -307,8 +319,6 @@ export function ChairManagement(props: AdminCommonProps) {
                                 () => {
                                   const updated = chairSpecs.filter(c => c.id !== chair.id);
                                   setChairSpecs(updated);
-                                  setChairSpecsState(updated);
-                                  showSuccess('Chair deleted!');
                                 },
                               );
                             }}
@@ -338,7 +348,6 @@ export function ChairManagement(props: AdminCommonProps) {
                               onChange={(e) => {
                                 const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, name: e.target.value } : c);
                                 setChairSpecs(updated);
-                                setChairSpecsState(updated);
                               }}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent"
                             />
@@ -355,7 +364,6 @@ export function ChairManagement(props: AdminCommonProps) {
                                 onChange={(e) => {
                                   const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, width: parseFloat(e.target.value) || 1.5 } : c);
                                   setChairSpecs(updated);
-                                  setChairSpecsState(updated);
                                 }}
                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent"
                               />
@@ -371,7 +379,6 @@ export function ChairManagement(props: AdminCommonProps) {
                                 onChange={(e) => {
                                   const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, depth: parseFloat(e.target.value) || 1.5 } : c);
                                   setChairSpecs(updated);
-                                  setChairSpecsState(updated);
                                 }}
                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent"
                               />
@@ -396,7 +403,6 @@ export function ChairManagement(props: AdminCommonProps) {
                                 onChange={(e) => {
                                   const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, color: e.target.value } : c);
                                   setChairSpecs(updated);
-                                  setChairSpecsState(updated);
                                 }}
                                 className="w-12 h-10 border-2 border-gray-300 rounded-lg cursor-pointer shadow-sm"
                               />
@@ -406,7 +412,6 @@ export function ChairManagement(props: AdminCommonProps) {
                                 onChange={(e) => {
                                   const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, color: e.target.value } : c);
                                   setChairSpecs(updated);
-                                  setChairSpecsState(updated);
                                 }}
                                 className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono"
                                 placeholder="#FFFFFF"
@@ -422,7 +427,6 @@ export function ChairManagement(props: AdminCommonProps) {
                                 onChange={(emoji) => {
                                   const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, icon: emoji } : c);
                                   setChairSpecs(updated);
-                                  setChairSpecsState(updated);
                                 }}
                                 position="auto"
                               />
@@ -443,7 +447,6 @@ export function ChairManagement(props: AdminCommonProps) {
                                 onClick={() => {
                                   const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, color } : c);
                                   setChairSpecs(updated);
-                                  setChairSpecsState(updated);
                                 }}
                                 className={`w-7 h-7 rounded-lg border-2 transition-transform hover:scale-110 ${chair.color === color ? 'border-amber-500 ring-2 ring-amber-200' : 'border-gray-300'}`}
                                 style={{ backgroundColor: color }}
@@ -470,7 +473,6 @@ export function ChairManagement(props: AdminCommonProps) {
                                 const value = e.target.value === '' ? undefined : parseInt(e.target.value);
                                 const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, inventoryCount: value } : c);
                                 setChairSpecs(updated);
-                                setChairSpecsState(updated);
                               }}
                               className="w-24 px-3 py-2 border border-green-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent text-center"
                               placeholder="∞"
@@ -484,7 +486,6 @@ export function ChairManagement(props: AdminCommonProps) {
                               onClick={() => {
                                 const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, inventoryCount: undefined } : c);
                                 setChairSpecs(updated);
-                                setChairSpecsState(updated);
                               }}
                               className="px-3 py-1.5 bg-green-200 text-green-700 rounded-lg hover:bg-green-300 transition-colors text-sm"
                             >
@@ -504,7 +505,6 @@ export function ChairManagement(props: AdminCommonProps) {
                           onChange={(images) => {
                             const updated = chairSpecs.map(c => c.id === chair.id ? { ...c, images } : c);
                             setChairSpecs(updated);
-                            setChairSpecsState(updated);
                           }}
                           maxImages={4}
                           itemName="chair"
@@ -513,24 +513,21 @@ export function ChairManagement(props: AdminCommonProps) {
 
                       {/* Actions */}
                       <div className="flex gap-2">
-                        <button
-                          onClick={() => showSuccess('Chair saved!')}
-                          className="btn-primary flex-1 px-4 py-2.5 bg-[#4A1942] hover:bg-[#3b1435] text-white rounded-lg transition-all font-bold shadow-sm"
-                          style={{ backgroundColor: config.primaryColor || '#4A1942' }}
-                        >
-                          ✓ Save Chair
-                        </button>
+                        <div className="flex-1 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-center text-xs font-semibold text-green-800">
+                          Metadata saves automatically; referenced physical edits create a reviewed revision.
+                        </div>
                         <button
                           onClick={() => {
                             const newChair: ChairSpec = {
                               ...chair,
-                              id: `chair-${Date.now()}` as ChairType,
-                              name: `${chair.name} (Copy)`
+                              id: createEntityId('chair', chairSpecs.map((item) => item.id)) as ChairType,
+                              name: `${chair.name} (Copy)`,
+                              archived: false,
+                              catalogFamilyId: undefined,
+                              catalogRevision: undefined
                             };
                             const updated = [...chairSpecs, newChair];
                             setChairSpecs(updated);
-                            setChairSpecsState(updated);
-                            showSuccess('Chair duplicated!');
                           }}
                           className="px-4 py-2.5 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors font-medium"
                         >
@@ -553,7 +550,7 @@ export function ChairManagement(props: AdminCommonProps) {
                     <button
                       onClick={() => {
                         const newChair: ChairSpec = {
-                          id: `chair-${Date.now()}` as ChairType,
+                          id: createEntityId('chair', chairSpecs.map((item) => item.id)) as ChairType,
                           name: 'New Chair',
                           color: '#FFFFFF',
                           width: 1.5,
@@ -562,7 +559,6 @@ export function ChairManagement(props: AdminCommonProps) {
                         };
                         const updated = [...chairSpecs, newChair];
                         setChairSpecs(updated);
-                        setChairSpecsState(updated);
                         setExpandedChairs(new Set([newChair.id]));
                       }}
                       className="btn-primary px-5 py-2.5 bg-[#4A1942] hover:bg-[#3b1435] text-white rounded-lg transition-all font-bold shadow-sm"
@@ -583,8 +579,6 @@ export function ChairManagement(props: AdminCommonProps) {
                           { id: 'vineyard' as ChairType, name: 'Vineyard Oak', color: '#A0522D', width: 1.5, depth: 1.5, icon: '🌳' }
                         ];
                         setChairSpecs([...chairSpecs, ...defaultChairs]);
-                        setChairSpecsState([...chairSpecs, ...defaultChairs]);
-                        showSuccess('Added 8 default chair types!');
                       }}
                       className="px-5 py-2.5 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors font-medium"
                     >

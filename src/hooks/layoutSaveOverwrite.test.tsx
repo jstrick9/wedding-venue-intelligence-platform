@@ -20,6 +20,7 @@ describe('layout save overwrite + dirty tracking', () => {
     localStorage.clear();
     setVenues([
       { id: 'ballroom', name: 'Grand Ballroom', width: 80, height: 60, capacity: 250, category: 'reception', color: '#fff' },
+      { id: 'garden', name: 'Garden', width: 60, height: 50, capacity: 150, category: 'ceremony', color: '#eef8ea' },
     ]);
     setTableSpecs([
       { id: 'round-60', name: 'Round 60"', shape: 'circle', width: 5, height: 5, capacity: 8, showChairs: true },
@@ -43,6 +44,22 @@ describe('layout save overwrite + dirty tracking', () => {
     expect(named[0].tables).toHaveLength(2);
   });
 
+  it('keeps same-name layouts in different venues independent', () => {
+    const { result } = renderHook(() => useLayoutState('ballroom'));
+    act(() => { result.current.addTable('round-60', { x: 10, y: 10 }); });
+    act(() => { result.current.saveLayoutWithOverwrite('Shared Plan'); });
+
+    act(() => { result.current.changeVenue('garden'); });
+    act(() => { result.current.addTable('round-60', { x: 20, y: 20 }); });
+    act(() => { result.current.saveLayoutWithOverwrite('shared plan'); });
+
+    const named = getSavedLayouts().filter(
+      (layout) => layout.name.toLowerCase() === 'shared plan',
+    );
+    expect(named).toHaveLength(2);
+    expect(new Set(named.map((layout) => layout.venueId))).toEqual(new Set(['ballroom', 'garden']));
+  });
+
   it('tracks layoutDirty across edits and clears on save', () => {
     const { result } = renderHook(() => useLayoutState('ballroom'));
     expect(result.current.layoutDirty).toBe(false);
@@ -53,4 +70,55 @@ describe('layout save overwrite + dirty tracking', () => {
     act(() => { result.current.saveLayoutWithOverwrite('Plan'); });
     expect(result.current.layoutDirty).toBe(false);
   });
+
+  it('establishes the exact saved-layout payload as a clean baseline', () => {
+    const { result } = renderHook(() => useLayoutState('ballroom'));
+    act(() => { result.current.addTable('round-60', { x: 10, y: 10 }); });
+    let savedId = '';
+    act(() => { savedId = result.current.saveLayout('Saved baseline'); });
+    act(() => { result.current.addTable('round-60', { x: 20, y: 20 }); });
+    expect(result.current.layoutDirty).toBe(true);
+
+    act(() => { result.current.loadLayout(savedId); });
+    expect(result.current.layout.tables).toHaveLength(1);
+    expect(result.current.layoutDirty).toBe(false);
+  });
+
+  it('keeps venue-master and template replacements clean without a stale follow-up mark', () => {
+    const venues = [
+      ...resultingVenuesWithGardenMaster(),
+    ];
+    setVenues(venues);
+    const { result } = renderHook(() => useLayoutState('ballroom'));
+    act(() => { result.current.addTable('round-60', { x: 1, y: 1 }); });
+    expect(result.current.layoutDirty).toBe(true);
+
+    act(() => { result.current.changeVenue('garden'); });
+    expect(result.current.layout.tables[0]?.id).toBe('master-table');
+    expect(result.current.layout.decor[0]).toMatchObject({ id: 'master-decor', parentId: 'master-table' });
+    expect(result.current.layoutDirty).toBe(false);
+
+    act(() => { result.current.loadTemplate({
+      id: 'template', name: 'Template', venueId: 'ballroom', category: 'reception',
+      tables: [{ id: 'template-table', type: 'table', specId: 'round-60', x: 7, y: 8, rotation: 0, label: 'Template Table', guests: [] }],
+      fixtures: [], decor: [], ceremonyRows: [], createdAt: new Date().toISOString(),
+    } as any); });
+    expect(result.current.layout.tables[0]?.id).toBe('template-table');
+    expect(result.current.layoutDirty).toBe(false);
+  });
 });
+
+function resultingVenuesWithGardenMaster() {
+  return [
+    { id: 'ballroom', name: 'Grand Ballroom', width: 80, height: 60, capacity: 250, category: 'reception' as const, color: '#fff' },
+    {
+      id: 'garden', name: 'Garden', width: 60, height: 50, capacity: 150, category: 'ceremony' as const, color: '#eef8ea',
+      masterLayout: {
+        tables: [{ id: 'master-table', type: 'table' as const, specId: 'round-60', x: 4, y: 5, rotation: 0, label: 'Master Table', guests: [] }],
+        fixtures: [],
+        decor: [{ id: 'master-decor', decorItemId: 'flowers', x: 5, y: 6, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, zIndex: 1, parentType: 'table' as const, parentId: 'master-table' }],
+        ceremonyRows: [], savedAt: new Date().toISOString(),
+      },
+    },
+  ];
+}

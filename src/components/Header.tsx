@@ -139,7 +139,8 @@ export function Header({
   const layoutNameExists =
     layoutName.trim().length > 0 &&
     savedLayouts.some(
-      (l) => l.name.toLowerCase() === layoutName.trim().toLowerCase(),
+      (l) => l.venueId === currentVenue.id
+        && l.name.toLowerCase() === layoutName.trim().toLowerCase(),
     );
 
   const handleVenueSelect = (venueId: string) => {

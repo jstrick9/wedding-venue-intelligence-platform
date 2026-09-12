@@ -4,6 +4,7 @@ import { showToast } from './Toast';
 import { uploadImage } from '../services/storage/imageStorage';
 import { useAuth } from '../contexts/AuthContext';
 import { describeUnknownError } from '../utils/unknownError';
+import { createEntityId } from '../utils/entityId';
 
 interface ImageItem {
   id: string;
@@ -61,7 +62,7 @@ export const MultiImageUpload: React.FC<MultiImageUploadProps> = ({
         organizationId: effectiveOrgId,
       });
       const newImage: ImageItem = {
-        id: `img-${Date.now()}`,
+        id: createEntityId('image', images.map((image) => image.id)),
         url,
         label: `Image ${images.length + 1}`,
       };

@@ -3,6 +3,7 @@ import {
   PlacedTable,
   PlacedFixture,
   PlacedDecor,
+  CeremonyChairRow,
   Venue,
   Guest,
   Layout,
@@ -45,7 +46,13 @@ import { STORAGE_KEYS } from '../constants/storageKeys';
 import { STORAGE_VERSIONS } from '../constants/storageVersions';
 import { saveVersionedStorage } from '../utils/storage';
 import { emitDataChanged, on, emit } from '../utils/appEvents';
+import { createEntityId } from '../utils/entityId';
 import { validateLayout } from '../utils/collisionDetection';
+import { mergeVenueGeometry, venueGeometrySignature } from '../utils/venueGeometry';
+import {
+  replaceCatalogReferencesInLayout,
+  type CatalogKind,
+} from '../utils/catalogReferences';
 
 // Position type
 export interface Position {
@@ -74,6 +81,7 @@ export interface SavedLayout {
   tables: PlacedTable[];
   fixtures: PlacedFixture[];
   decor: PlacedDecor[];
+  ceremonyRows?: CeremonyChairRow[];
   guests: Guest[];
   createdAt: string;
   updatedAt: string;
@@ -332,7 +340,7 @@ export function resetToDefaults(): void {
 // Create initial layout
 function createInitialLayout(venueId: string): Layout {
   return {
-    id: `layout-${Date.now()}`,
+    id: createEntityId('layout'),
     name: 'Untitled Layout',
     venueId,
     tables: [],
@@ -343,9 +351,23 @@ function createInitialLayout(venueId: string): Layout {
   };
 }
 
-/** A stable content key for the working layout (tables/fixtures/decor only). */
+/** A stable content key for every editable working-layout collection. */
+function layoutItemIds(layout: Pick<Layout, 'tables' | 'fixtures' | 'decor' | 'ceremonyRows'>): string[] {
+  return [
+    ...layout.tables.map((item) => item.id),
+    ...layout.fixtures.map((item) => item.id),
+    ...(layout.decor || []).map((item) => item.id),
+    ...(layout.ceremonyRows || []).map((item) => item.id),
+  ];
+}
+
 function layoutSnapshotKey(layout: Layout): string {
-  return JSON.stringify([layout.tables, layout.fixtures, layout.decor]);
+  return JSON.stringify([
+    layout.tables,
+    layout.fixtures,
+    layout.decor,
+    layout.ceremonyRows || [],
+  ]);
 }
 
 // Main hook
@@ -389,6 +411,16 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
     layoutDirtyRef.current = false;
     setLayoutDirty(false);
   }, [layout]);
+
+  // Layout replacements must establish their baseline from the exact incoming
+  // payload before React commits state. Calling markLayoutClean immediately after
+  // setLayout snapshots the stale previous render and marks the new layout dirty.
+  const replaceWithCleanLayout = useCallback((nextLayout: Layout) => {
+    layoutBaselineRef.current = layoutSnapshotKey(nextLayout);
+    layoutDirtyRef.current = false;
+    setLayoutDirty(false);
+    setLayout(nextLayout);
+  }, []);
 
   // Keep the layout-health warnings in sync with the current layout + venue.
   // Collision rules are also enforced at placement time (toasts); this provides
@@ -470,28 +502,23 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       const masterTables = venue.masterLayout?.tables || [];
       const masterFixtures = venue.masterLayout?.fixtures || [];
       const masterDecor = venue.masterLayout?.decor || [];
+      const masterCeremonyRows = venue.masterLayout?.ceremonyRows || [];
 
       const newLayout: Layout = {
-        id: `layout-${Date.now()}`,
+        id: createEntityId('layout'),
         name: 'Untitled Layout',
         venueId,
-        tables: masterTables.map((t) => ({
-          ...t,
-          id: `table-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        })),
-        fixtures: masterFixtures.map((f) => ({
-          ...f,
-          id: `fixture-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        })),
-        decor: masterDecor.map((d) => ({
-          ...d,
-          id: `decor-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        })),
+        // Instance IDs are scoped to this layout document. Preserve them and
+        // every parentId relationship while cloning into immutable working state.
+        tables: masterTables.map((table) => ({ ...table, guests: [...(table.guests || [])] })),
+        fixtures: masterFixtures.map((fixture) => ({ ...fixture, guests: fixture.guests ? [...fixture.guests] : undefined })),
+        decor: masterDecor.map((item) => ({ ...item })),
+        ceremonyRows: masterCeremonyRows.map((row) => ({ ...row })),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
 
-      setLayout(newLayout);
+      replaceWithCleanLayout(newLayout);
       setSelectedId(null);
       setWarnings([]);
       // The working layout was replaced; clear undo history so Undo can't
@@ -510,7 +537,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
     } catch (error) {
       console.error('Error changing venue:', error);
     }
-  }, []);
+  }, [replaceWithCleanLayout]);
 
   // Add table
   const addTable = useCallback(
@@ -520,8 +547,12 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       if (!spec) return;
 
       const tableCount = layout.tables.filter((t) => t.specId === specId).length;
+      const chairType = spec.defaultChairType || 'white-plastic';
+      const chairCount = chairType === 'none'
+        ? 0
+        : Math.max(0, Math.floor(Number(spec.capacity) || 0));
       const newTable: PlacedTable = {
-        id: `table-${Date.now()}`,
+        id: createEntityId('table', layoutItemIds(layout)),
         type: 'table',
         specId,
         x: position.x,
@@ -531,9 +562,9 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
         guests: [],
         hasLinen: spec.isSeatingType ? false : true,
         linenColor: 'white',
-        showChairs: true,
-        chairType: spec.defaultChairType || 'white-plastic',
-        chairCount: spec.capacity,
+        showChairs: chairCount > 0 && chairType !== 'none' && spec.showChairs !== false,
+        chairType,
+        chairCount,
         chairLayout: spec.defaultChairLayout || 'all-sides',
       };
 
@@ -544,7 +575,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       }));
       setSelectedId(newTable.id);
     },
-    [layout.tables],
+    [layout],
   );
 
   // Add fixture
@@ -556,7 +587,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
 
       const fixtureCount = layout.fixtures.filter((f) => f.specId === specId).length;
       const newFixture: PlacedFixture = {
-        id: `fixture-${Date.now()}`,
+        id: createEntityId('fixture', layoutItemIds(layout)),
         type: 'fixture',
         specId,
         x: position.x,
@@ -573,7 +604,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       }));
       setSelectedId(newFixture.id);
     },
-    [layout.fixtures],
+    [layout],
   );
 
   // Update table
@@ -607,7 +638,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       if (!spec) return;
 
       const newDecor: any = {
-        id: `decor-${Date.now()}`,
+        id: createEntityId('decor', layoutItemIds(layout)),
         decorItemId,
         x: position.x,
         y: position.y,
@@ -627,7 +658,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       }));
       setSelectedId(newDecor.id);
     },
-    [layout.decor],
+    [layout],
   );
 
   // Update decor
@@ -657,20 +688,21 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
     [selectedId],
   );
 
-  // Duplicate item
+  // Duplicate item. The shell supplies a collision/inventory-validated position
+  // for tables and fixtures; decor uses the same offset when no override is given.
   const duplicateItem = useCallback(
-    (id: string) => {
-      const table = layout.tables.find((t) => t.id === id);
+    (id: string, position?: Position) => {
+      const existingIds = layoutItemIds(layout);
+      const table = layout.tables.find((candidate) => candidate.id === id);
       if (table) {
         const newTable: PlacedTable = {
           ...table,
-          id: `table-${Date.now()}`,
-          x: table.x + 3,
-          y: table.y + 3,
+          id: createEntityId('table', existingIds),
+          x: position?.x ?? table.x + 3,
+          y: position?.y ?? table.y + 3,
           label: `${table.label} Copy`,
           guests: [],
         };
-
         setLayout((prev) => ({
           ...prev,
           tables: [...prev.tables, newTable],
@@ -680,31 +712,47 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
         return;
       }
 
-      const fixture = layout.fixtures.find((f) => f.id === id);
+      const fixture = layout.fixtures.find((candidate) => candidate.id === id);
       if (fixture) {
         const newFixture: PlacedFixture = {
           ...fixture,
-          id: `fixture-${Date.now()}`,
-          x: fixture.x + 3,
-          y: fixture.y + 3,
+          id: createEntityId('fixture', existingIds),
+          x: position?.x ?? fixture.x + 3,
+          y: position?.y ?? fixture.y + 3,
           label: `${fixture.label} Copy`,
         };
-
         setLayout((prev) => ({
           ...prev,
           fixtures: [...prev.fixtures, newFixture],
           updatedAt: new Date().toISOString(),
         }));
         setSelectedId(newFixture.id);
+        return;
+      }
+
+      const decorItem = layout.decor.find((candidate) => candidate.id === id);
+      if (decorItem) {
+        const newDecor: PlacedDecor = {
+          ...decorItem,
+          id: createEntityId('decor', existingIds),
+          x: position?.x ?? decorItem.x + 3,
+          y: position?.y ?? decorItem.y + 3,
+        };
+        setLayout((prev) => ({
+          ...prev,
+          decor: [...prev.decor, newDecor],
+          updatedAt: new Date().toISOString(),
+        }));
+        setSelectedId(newDecor.id);
       }
     },
-    [layout.tables, layout.fixtures],
+    [layout],
   );
 
   // Add guest
   const addGuest = useCallback((name: string, group?: string, tableId?: string): string => {
     const newGuest: Guest = {
-      id: `guest-${Date.now()}`,
+      id: createEntityId('guest', guests.map((guest) => guest.id)),
       name,
       group,
       tableId,
@@ -724,7 +772,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
     }
 
     return newGuest.id;
-  }, []);
+  }, [guests]);
 
   // Update guest
   const updateGuest = useCallback((id: string, updates: Partial<Guest>) => {
@@ -850,6 +898,8 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       ...prev,
       tables: [],
       fixtures: [],
+      decor: [],
+      ceremonyRows: [],
       updatedAt: new Date().toISOString(),
     }));
     setSelectedId(null);
@@ -861,12 +911,13 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       const savedLayouts = getSavedLayouts();
 
       const newLayout: SavedLayout = {
-        id: `saved-${Date.now()}`,
+        id: createEntityId('saved', savedLayouts.map((saved) => saved.id)),
         name,
         venueId: currentVenue.id,
         tables: layout.tables,
         fixtures: layout.fixtures,
         decor: layout.decor,
+        ceremonyRows: layout.ceremonyRows || [],
         guests,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -876,7 +927,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       markLayoutClean();
       return newLayout.id;
     },
-    [currentVenue.id, layout.tables, layout.fixtures, layout.decor, guests, markLayoutClean],
+    [currentVenue.id, layout.tables, layout.fixtures, layout.decor, layout.ceremonyRows, guests, markLayoutClean],
   );
 
   // Save with optional overwrite: if a saved layout with the same name exists,
@@ -887,7 +938,8 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       const trimmed = name.trim();
       const savedLayouts = getSavedLayouts();
       const existing = savedLayouts.find(
-        (l) => l.name.toLowerCase() === trimmed.toLowerCase(),
+        (l) => l.venueId === currentVenue.id
+          && l.name.toLowerCase() === trimmed.toLowerCase(),
       );
 
       if (existing) {
@@ -898,6 +950,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
           tables: layout.tables,
           fixtures: layout.fixtures,
           decor: layout.decor,
+          ceremonyRows: layout.ceremonyRows || [],
           guests,
           updatedAt: new Date().toISOString(),
         };
@@ -909,12 +962,13 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       }
 
       const newLayout: SavedLayout = {
-        id: `saved-${Date.now()}`,
+        id: createEntityId('saved', savedLayouts.map((saved) => saved.id)),
         name: trimmed,
         venueId: currentVenue.id,
         tables: layout.tables,
         fixtures: layout.fixtures,
         decor: layout.decor,
+        ceremonyRows: layout.ceremonyRows || [],
         guests,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -923,7 +977,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       markLayoutClean();
       return newLayout.id;
     },
-    [currentVenue.id, layout.tables, layout.fixtures, layout.decor, guests, markLayoutClean],
+    [currentVenue.id, layout.tables, layout.fixtures, layout.decor, layout.ceremonyRows, guests, markLayoutClean],
   );
 
   // Load layout
@@ -940,13 +994,14 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
         setVenuesState(allVenues);
       }
 
-      setLayout({
-        id: `layout-${Date.now()}`,
+      replaceWithCleanLayout({
+        id: createEntityId('layout'),
         name: savedLayout.name,
         venueId: savedLayout.venueId,
-        tables: savedLayout.tables,
-        fixtures: savedLayout.fixtures,
-        decor: savedLayout.decor || [],
+        tables: savedLayout.tables.map((table) => ({ ...table, guests: [...(table.guests || [])] })),
+        fixtures: savedLayout.fixtures.map((fixture) => ({ ...fixture, guests: fixture.guests ? [...fixture.guests] : undefined })),
+        decor: (savedLayout.decor || []).map((item) => ({ ...item })),
+        ceremonyRows: (savedLayout.ceremonyRows || []).map((row) => ({ ...row })),
         createdAt: savedLayout.createdAt,
         updatedAt: new Date().toISOString(),
       });
@@ -959,7 +1014,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
         setTimeout(() => venueChangeCallback.current?.(), 100);
       }
     }
-  }, []);
+  }, [replaceWithCleanLayout]);
 
   // Delete saved layout
   const deleteSavedLayout = useCallback((layoutId: string) => {
@@ -976,20 +1031,16 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       setCurrentVenue(venue);
       setVenuesState(allVenues);
 
-      setLayout({
-        id: `layout-${Date.now()}`,
+      replaceWithCleanLayout({
+        id: createEntityId('layout'),
         name: template.name,
         venueId: template.venueId,
-        tables: (template.tables || []).map((t) => ({
-          ...t,
-          id: `table-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-          guests: [] as string[],
-        })),
-        fixtures: (template.fixtures || []).map((f) => ({
-          ...f,
-          id: `fixture-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        })),
-        decor: (template as any).decor || [],
+        // Keep template-scoped IDs so décor parent links remain intact. Working
+        // edits replace objects immutably and cannot mutate the stored template.
+        tables: (template.tables || []).map((table) => ({ ...table, guests: [] as string[] })),
+        fixtures: (template.fixtures || []).map((fixture) => ({ ...fixture, guests: fixture.guests ? [...fixture.guests] : undefined })),
+        decor: ((template as any).decor || []).map((item: PlacedDecor) => ({ ...item })),
+        ceremonyRows: (template.ceremonyRows || []).map((row) => ({ ...row })),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
@@ -1001,7 +1052,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
         setTimeout(() => venueChangeCallback.current?.(), 100);
       }
     }
-  }, []);
+  }, [replaceWithCleanLayout]);
 
   // Save current layout as master layout for venue
   const saveMasterLayout = useCallback(() => {
@@ -1016,6 +1067,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
             tables: layout.tables,
             fixtures: layout.fixtures,
             decor: layout.decor,
+            ceremonyRows: layout.ceremonyRows || [],
             savedAt: new Date().toISOString(),
           },
         };
@@ -1031,7 +1083,7 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
     if (updatedVenue) {
       setCurrentVenue(updatedVenue);
     }
-  }, [currentVenue.id, layout.tables, layout.fixtures, layout.decor]);
+  }, [currentVenue.id, layout.tables, layout.fixtures, layout.decor, layout.ceremonyRows]);
 
   // Clear master layout for venue
   const clearMasterLayout = useCallback(() => {
@@ -1054,14 +1106,71 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
       setCurrentVenue(updatedVenue);
     }
   }, [currentVenue.id]);
+
+  // Persist an explicitly applied Design Studio space/canvas edit through the
+  // same venue entity domain used by Admin & System Settings.
+  const updateCurrentVenue = useCallback((nextVenue: Venue, expectedGeometrySignature?: string) => {
+    if (nextVenue.id !== currentVenue.id) return 'venue-changed' as const;
+    const allVenues = getVenues();
+    const latestVenue = allVenues.find((venue) => venue.id === currentVenue.id);
+    if (!latestVenue) return 'missing' as const;
+    if (expectedGeometrySignature
+      && venueGeometrySignature(latestVenue) !== expectedGeometrySignature) {
+      return 'conflict' as const;
+    }
+
+    // Apply only geometry fields onto the latest record so a concurrent name,
+    // capacity, branding, or master-layout update is never overwritten by the
+    // modal's older full-venue snapshot.
+    const mergedVenue = mergeVenueGeometry(latestVenue, nextVenue);
+    const updatedVenues = allVenues.map((venue) =>
+      venue.id === currentVenue.id ? mergedVenue : venue);
+    setVenues(updatedVenues);
+    setVenuesState(updatedVenues);
+    setCurrentVenue(mergedVenue);
+    return 'applied' as const;
+  }, [currentVenue.id]);
   
+  const replaceWorkingCatalogReferences = useCallback((
+    kind: CatalogKind,
+    oldId: string,
+    replacementId: string,
+    options?: { oldTableSpec?: TableSpec; incompatibleArrangementIds?: string[] },
+  ) => {
+    setLayout((previous) => ({
+      ...replaceCatalogReferencesInLayout(previous, kind, oldId, replacementId, {
+        oldTableSpec: options?.oldTableSpec,
+        tableSpecs: getTableSpecs(),
+        incompatibleArrangementIds: new Set(options?.incompatibleArrangementIds || []),
+      }),
+      updatedAt: new Date().toISOString(),
+    }));
+  }, []);
+
+  const applyIdentityRepair = useCallback((
+    repaired: { tables: PlacedTable[]; fixtures: PlacedFixture[]; decor: PlacedDecor[]; ceremonyRows?: Layout['ceremonyRows'] },
+    repairedGuests: Guest[],
+  ) => {
+    setLayout((previous) => ({
+      ...previous,
+      tables: repaired.tables,
+      fixtures: repaired.fixtures,
+      decor: repaired.decor,
+      ceremonyRows: repaired.ceremonyRows || [],
+      updatedAt: new Date().toISOString(),
+    }));
+    setGuests(repairedGuests);
+    setSelectedId(null);
+  }, []);
+
   // Update entire layout (for undo/redo)
-  const updateLayout = useCallback((updates: { tables?: PlacedTable[]; fixtures?: PlacedFixture[]; decor?: PlacedDecor[] }) => {
+  const updateLayout = useCallback((updates: { tables?: PlacedTable[]; fixtures?: PlacedFixture[]; decor?: PlacedDecor[]; ceremonyRows?: Layout['ceremonyRows'] }) => {
     setLayout((prev) => ({
       ...prev,
       tables: updates.tables ?? prev.tables,
       fixtures: updates.fixtures ?? prev.fixtures,
       decor: updates.decor ?? prev.decor,
+      ceremonyRows: updates.ceremonyRows ?? prev.ceremonyRows,
       updatedAt: new Date().toISOString(),
     }));
   }, []);
@@ -1084,7 +1193,10 @@ export function useLayoutState(initialVenueId: string = 'setup-venue') {
     // Actions
     changeVenue,
     refreshVenues,
-	updateLayout,
+    updateCurrentVenue,
+    replaceWorkingCatalogReferences,
+    updateLayout,
+    applyIdentityRepair,
     addTable,
     addFixture,
     addDecor,

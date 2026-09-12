@@ -128,6 +128,7 @@ import {
   type ExportOptions,
 } from '../utils/layoutExport';
 import { showToast } from './Toast';
+import { createEntityId } from '../utils/entityId';
 import { describeUnknownError } from '../utils/unknownError';
 import { uploadImage } from '../services/storage/imageStorage';
 import { getPlatformProvider } from '../services/platform';
@@ -2012,7 +2013,7 @@ export function VenueMapDesigner({
       rainContingencies: [
         ...(map.rainContingencies || []),
         {
-          id: `rc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          id: createEntityId('rain-plan', (map.rainContingencies || []).map((plan) => plan.id)),
           outdoorVenueId: outdoorVenue.id,
           indoorVenueId: indoorVenue.id,
         },
@@ -2392,7 +2393,7 @@ export function VenueMapDesigner({
     const width = Math.max(8, map.width * 0.24);
     const height = Math.max(6, map.height * 0.18);
     const drawing: DrawingObject = {
-      id: `zone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: createEntityId('zone', (map.drawings || []).map((candidate) => candidate.id)),
       type: 'zone',
       x: Math.max(0, (map.width - width) / 2),
       y: Math.max(0, (map.height - height) / 2),

@@ -1,10 +1,10 @@
 import { useState, useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
-import { useLayoutState, getSavedLayouts, setSavedLayouts, getTemplates, getTableSpecs, getFixtureTypes, getDecorArrangements } from '../hooks/useLayoutState';
+import { useLayoutState, getSavedLayouts, setSavedLayouts, getTemplates, getTableSpecs, getFixtureTypes, getDecorArrangements, getDecorItems } from '../hooks/useLayoutState';
 import { scrubArrangementRefs } from '../utils/decorCleanup';
 import { useLayoutBackendSync } from '../hooks/useLayoutBackendSync';
 import { useEntityBackendSync } from '../hooks/useEntityBackendSync';
 import { EventAnswer, EventQuestion, LayoutTemplate, VenueMapConfig } from '../types';
-import { layoutCategories } from '../data/venueData';
+import { getChairSpecs, getSpacingSettings, layoutCategories } from '../data/venueData';
 import { useAuth } from '../contexts/AuthContext';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
@@ -19,7 +19,12 @@ import { buildMessageThreadId } from '../models/DirectMessage';
 import { useSubmissionWorkflow } from '../hooks/useSubmissionWorkflow';
 import { getConfig, useBrandingConfig } from '../config';
 import { applyDocumentBranding } from '../utils/documentBranding';
-import { checkTableCollision, checkFixtureCollision } from '../utils/collisionDetection';
+import {
+  checkTableCollision,
+  checkFixtureCollision,
+  getFixtureFootprintPolygon,
+  getTableFootprintPolygon,
+} from '../utils/collisionDetection';
 import { subscribeToCollaborationEvents } from '../utils/collaborationChannel';
 import {
   buildProjectHealthReport,
@@ -53,15 +58,37 @@ import {
   getEntityDomainRevision,
 } from '../services/repository/entityRepository';
 import { getCoupleEvents } from '../services/couples/coupleService';
-import { computeSpaceSeating } from '../utils/spaceSeating';
 import { emit, emitDataChanged, on, type UndoSnapshot } from '../utils/appEvents';
 import { VENUE_HOME_HASH, needsVenueHomeHashRewrite } from '../utils/venueHomeRoute';
 import { venueMapGuestRouteCoverageIssues } from '../utils/venueMapDesigner';
 import { useModals } from '../contexts/ModalContext';
+import { VenueGeometryEditor } from './VenueGeometryEditor';
+import type { GeometryImpactSource } from '../utils/venueGeometryImpact';
+import {
+  configuredChairCount,
+  configuredChairType,
+  layoutSeatCount,
+} from '../utils/layoutSeating';
+import {
+  arrangementPlacementInventoryIssue,
+  decorPlacementInventoryIssue,
+  fixturePlacementInventoryIssue,
+  tablePlacementInventoryIssue,
+} from '../utils/layoutInventory';
+import {
+  effectiveCanvasGeometry,
+  footprintFitsVenue,
+  isSupportedVenueShape,
+  pointInPolygon,
+  rotatedBoxPolygon,
+  venueShapePolygon,
+} from '../utils/venueGeometry';
+import { appliedArrangementBaseDimensions, appliedArrangementFootprints } from '../utils/decorGeometry';
+import { applyLayoutIdentityRepair, buildLayoutIdentityReview } from '../utils/layoutIdentity';
+import { LayoutIdentityRepairDialog } from './LayoutIdentityRepairDialog';
 
 // ─── Lazy-loaded modal / portal components ───────────────────────────────────
 const DecorDesigner = lazy(() => import('./DecorDesigner').then((m) => ({ default: m.DecorDesigner })));
-const EventOverview = lazy(() => import('./EventOverview').then((m) => ({ default: m.EventOverview })));
 const WorkspaceHelp = lazy(() => import('./WorkspaceHelp').then((m) => ({ default: m.WorkspaceHelp })));
 const StaffOperationsPanel = lazy(() => import('./StaffOperationsPanel'));
 const AdminPanel = lazy(() => import('./AdminPanel').then((m) => ({ default: m.AdminPanel })));
@@ -75,6 +102,23 @@ const TimelinePanel = lazy(() => import('./TimelinePanel').then((m) => ({ defaul
 
 interface Position { x: number; y: number; }
 interface DragItem { type: 'table' | 'fixture' | 'arrangement'; specId: string; isExterior?: boolean; }
+
+function nearbyDuplicatePositions(x: number, y: number): Position[] {
+  const positions: Position[] = [];
+  for (let distance = 3; distance <= 48; distance += 3) {
+    positions.push(
+      { x: x + distance, y },
+      { x, y: y + distance },
+      { x: x - distance, y },
+      { x, y: y - distance },
+      { x: x + distance, y: y + distance },
+      { x: x - distance, y: y + distance },
+      { x: x + distance, y: y - distance },
+      { x: x - distance, y: y - distance },
+    );
+  }
+  return positions;
+}
 interface VenueMapConflictState {
   localMap: VenueMapConfig;
   currentPayload: unknown;
@@ -89,6 +133,23 @@ export default function AuthenticatedApp() {
   const allUsers = getAllUsers();
   const isStaff = user?.role === 'staff';
   const layoutState = useLayoutState();
+  const layoutIdentityReview = useMemo(
+    () => buildLayoutIdentityReview(layoutState.layout, layoutState.guests),
+    [layoutState.layout, layoutState.guests],
+  );
+  const [showIdentityRepair, setShowIdentityRepair] = useState(false);
+  const lastIdentityReviewSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!layoutIdentityReview) {
+      lastIdentityReviewSignatureRef.current = null;
+      setShowIdentityRepair(false);
+      return;
+    }
+    if (lastIdentityReviewSignatureRef.current !== layoutIdentityReview.signature) {
+      lastIdentityReviewSignatureRef.current = layoutIdentityReview.signature;
+      setShowIdentityRepair(true);
+    }
+  }, [layoutIdentityReview]);
 
   const [view, setView] = useState<'dashboard' | 'studio' | 'admin' | 'venuemap'>('dashboard');
   const [venueMapDirty, setVenueMapDirty] = useState(false);
@@ -153,6 +214,7 @@ export default function AuthenticatedApp() {
   // steps: a discrete action is one step, and rapid text typing doesn't flood the
   // undo history (updates to the same item within a short window share a step).
   const propertyEditUndoRef = useRef<{ id: string; at: number } | null>(null);
+  const pendingMoveUndoRef = useRef<UndoSnapshot | null>(null);
   const floorPlanSvgRef = useRef<SVGSVGElement>(null);
   const brandingConfig = useBrandingConfig();
   const [projectHealth, setProjectHealth] = useState<ProjectHealthReport | null>(null);
@@ -199,9 +261,9 @@ export default function AuthenticatedApp() {
   const showSubmission = modals.submission;
   const showEventQuestions = modals.eventQuestions;
   const showDecorDesigner = modals.decorDesigner;
-  const showOverview = modals.overview;
 
   const [showLayoutsHome, setShowLayoutsHome] = useState(false);
+  const [showVenueGeometryEditor, setShowVenueGeometryEditor] = useState(false);
 
   // Local UI state
   const initialUiPrefs = (() => {
@@ -279,7 +341,64 @@ export default function AuthenticatedApp() {
     return () => mq.removeEventListener('change', applyViewport);
   }, []);
   const [dragItem, setDragItem] = useState<DragItem | null>(null);
+  const [keepAdding, setKeepAdding] = useState(false);
   const [savedLayouts, setSavedLayoutsState] = useState(() => getSavedLayouts());
+  const venueGeometrySources = useMemo<GeometryImpactSource[]>(() => {
+    const venueId = layoutState.currentVenue.id;
+    const sources: GeometryImpactSource[] = [{
+      id: `working:${venueId}`,
+      label: 'Current working layout',
+      kind: 'working',
+      tables: layoutState.layout.tables,
+      fixtures: layoutState.layout.fixtures,
+      decor: layoutState.layout.decor || [],
+      ceremonyRows: layoutState.layout.ceremonyRows || [],
+    }];
+    const master = layoutState.currentVenue.masterLayout;
+    if (master) {
+      sources.push({
+        id: `master:${venueId}`,
+        label: `Master · ${layoutState.currentVenue.name}`,
+        kind: 'master',
+        tables: master.tables || [],
+        fixtures: master.fixtures || [],
+        decor: master.decor || [],
+        ceremonyRows: master.ceremonyRows || [],
+      });
+    }
+    savedLayouts
+      .filter((layout) => layout.venueId === venueId)
+      .forEach((layout) => sources.push({
+        id: `named:${layout.id}`,
+        label: layout.name,
+        kind: 'named',
+        tables: layout.tables || [],
+        fixtures: layout.fixtures || [],
+        decor: layout.decor || [],
+        ceremonyRows: layout.ceremonyRows || [],
+      }));
+    getCoupleEvents().forEach((event) => {
+      const coupleLayout = event.spaceLayouts?.[venueId]?.layout;
+      if (!coupleLayout) return;
+      sources.push({
+        id: `couple:${event.id}:${venueId}`,
+        label: `${event.coupleName}${event.eventDate ? ` · ${event.eventDate}` : ''}`,
+        kind: 'couple',
+        tables: coupleLayout.tables || [],
+        fixtures: coupleLayout.fixtures || [],
+        decor: coupleLayout.decor || [],
+        ceremonyRows: coupleLayout.ceremonyRows || [],
+      });
+    });
+    return sources;
+  }, [
+    layoutState.currentVenue,
+    layoutState.layout.tables,
+    layoutState.layout.fixtures,
+    layoutState.layout.decor,
+    layoutState.layout.ceremonyRows,
+    savedLayouts,
+  ]);
   const [imagePreview, setImagePreview] = useState<{ url: string; title: string } | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [selectedVenueCategories, setSelectedVenueCategories] = useState<string[]>([]);
@@ -335,14 +454,14 @@ export default function AuthenticatedApp() {
     return on('spm_data_changed', () => setCurrentEventAnswers(readEventAnswers()));
   }, [readEventAnswers]);
 
-  const eventQuestions = useMemo(() => {
+  const eventQuestions = (() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEYS.EVENT_QUESTIONS);
       if (!raw) return [] as EventQuestion[];
       const parsed = JSON.parse(raw) as EventQuestion[];
       return Array.isArray(parsed) ? parsed : [];
     } catch { return [] as EventQuestion[]; }
-  }, [showAdmin]);
+  })();
 
   const saveEventAnswers = useCallback((answers: EventAnswer[]) => {
     try {
@@ -354,6 +473,16 @@ export default function AuthenticatedApp() {
   }, [user.id, currentEventName]);
 
   const currentSubmission = submissionWorkflow.getByMasterAndEvent(user.id, currentEventName);
+
+  const handleAutoRepair = useCallback(async () => {
+    await createEmergencyRecoverySnapshot({ id: user.id, name: user.name });
+    const repaired = recoverCorruptDomains();
+    const report = buildProjectHealthReport();
+    setProjectHealth(report);
+    setSafeMode(report.overallStatus === 'corrupt');
+    emitDataChanged('all');
+    showToast(`Recovered ${repaired.length} damaged data area(s).`, 'warning');
+  }, [user.id, user.name]);
 
   const statusItems = useMemo<StatusBarItem[]>(() => {
     const items: StatusBarItem[] = [];
@@ -371,7 +500,7 @@ export default function AuthenticatedApp() {
       });
     }
     return items;
-  }, [safeMode, projectHealth]);
+  }, [safeMode, projectHealth, handleAutoRepair]);
 
   useEffect(() => {
     if (selectableVenues.length === 0) return;
@@ -385,9 +514,9 @@ export default function AuthenticatedApp() {
     const container = canvasContainerRef.current;
     const venue = layoutState.currentVenue;
     const scale = 8;
-    const padding = venue.exteriorPadding || { top: 40, right: 30, bottom: 30, left: 40 };
-    const canvasWidth = venue.canvasWidth ? venue.canvasWidth * scale : (venue.width + padding.left + padding.right) * scale;
-    const canvasHeight = venue.canvasHeight ? venue.canvasHeight * scale : (venue.height + padding.top + padding.bottom) * scale;
+    const canvas = effectiveCanvasGeometry(venue);
+    const canvasWidth = canvas.canvasWidth * scale;
+    const canvasHeight = canvas.canvasHeight * scale;
     const containerWidth = container.clientWidth;
     const containerHeight = container.clientHeight;
     const marginPx = 40;
@@ -404,27 +533,44 @@ export default function AuthenticatedApp() {
 
   const handleResetView = useCallback(() => fitAndCenterVenue(), [fitAndCenterVenue]);
 
-  function ensureCanEditLayout(): boolean {
+  const ensureCanEditLayout = useCallback((): boolean => {
+    if (layoutIdentityReview) {
+      showToast('This layout is read-only until duplicate object identities are reviewed and repaired.', 'warning');
+      setShowIdentityRepair(true);
+      return false;
+    }
     if (canEditCurrentLayout) return true;
     showToast('You do not have permission to edit this layout.', 'warning');
     return false;
-  }
+  }, [canEditCurrentLayout, layoutIdentityReview]);
+
+  const handleApplyIdentityRepair = useCallback((selections: Record<string, string>) => {
+    if (!layoutIdentityReview) throw new Error('This layout no longer needs identity repair.');
+    const repaired = applyLayoutIdentityRepair(
+      layoutState.layout,
+      layoutState.guests,
+      layoutIdentityReview,
+      selections,
+    );
+    layoutState.applyIdentityRepair(repaired.layout, repaired.guests);
+    emit('spm_clear_undo_history');
+    setShowIdentityRepair(false);
+    showToast(`Repaired ${layoutIdentityReview.changedEntityCount} duplicate or blank object ID${layoutIdentityReview.changedEntityCount === 1 ? '' : 's'} without moving any items. Save the working layout explicitly.`, 'success');
+  }, [layoutIdentityReview, layoutState]);
 
   const handleResetToVenue = useCallback(() => {
     if (!canvasContainerRef.current) return;
     const container = canvasContainerRef.current;
     const venue = layoutState.currentVenue;
     const scale = 8;
-    const padding = venue.exteriorPadding || { top: 40, right: 30, bottom: 30, left: 40 };
-    const venueOffsetX = (venue.venueX ?? padding.left) * scale;
-    const venueOffsetY = (venue.venueY ?? padding.top) * scale;
-    let minX = venueOffsetX; let minY = venueOffsetY;
-    let maxX = venueOffsetX + venue.width * scale; let maxY = venueOffsetY + venue.height * scale;
-    if (venue.shape === 'custom' && venue.shapePoints && venue.shapePoints.length >= 3) {
-      const xs = venue.shapePoints.map((p) => venueOffsetX + p.x * scale);
-      const ys = venue.shapePoints.map((p) => venueOffsetY + p.y * scale);
-      minX = Math.min(...xs); minY = Math.min(...ys); maxX = Math.max(...xs); maxY = Math.max(...ys);
-    }
+    const canvas = effectiveCanvasGeometry(venue);
+    const outline = venueShapePolygon(venue);
+    const xs = outline.map((point) => (canvas.venueX + point.x) * scale);
+    const ys = outline.map((point) => (canvas.venueY + point.y) * scale);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const maxX = Math.max(...xs);
+    const maxY = Math.max(...ys);
     const shapeWidth = Math.max(1, maxX - minX); const shapeHeight = Math.max(1, maxY - minY);
     const margin = 40; const containerWidth = container.clientWidth - margin; const containerHeight = container.clientHeight - margin;
     const zoomX = containerWidth / shapeWidth; const zoomY = containerHeight / shapeHeight;
@@ -439,9 +585,9 @@ export default function AuthenticatedApp() {
     const container = canvasContainerRef.current;
     const venue = layoutState.currentVenue;
     const scale = 8;
-    const padding = venue.exteriorPadding || { top: 40, right: 30, bottom: 30, left: 40 };
-    const canvasWidth = venue.canvasWidth ? venue.canvasWidth * scale : (venue.width + padding.left + padding.right) * scale;
-    const canvasHeight = venue.canvasHeight ? venue.canvasHeight * scale : (venue.height + padding.top + padding.bottom) * scale;
+    const canvas = effectiveCanvasGeometry(venue);
+    const canvasWidth = canvas.canvasWidth * scale;
+    const canvasHeight = canvas.canvasHeight * scale;
     const containerWidth = container.clientWidth - 40; const containerHeight = container.clientHeight - 40;
     const zoomX = containerWidth / canvasWidth; const zoomY = containerHeight / canvasHeight;
     const newZoom = Math.min(zoomX, zoomY, 2);
@@ -591,53 +737,65 @@ export default function AuthenticatedApp() {
       });
     });
   }, [layoutState]);
-  const pushUndoSnapshot = useCallback(() => {
-    const snapshot = {
-      tables: [...layoutState.layout.tables], fixtures: [...layoutState.layout.fixtures],
-      decor: [...(layoutState.layout.decor || [])], timestamp: Date.now(),
-    };
-    emit('spm_push_undo_snapshot', snapshot satisfies UndoSnapshot);
-  }, [layoutState.layout]);
+  const captureUndoSnapshot = useCallback((): UndoSnapshot => ({
+    tables: [...layoutState.layout.tables],
+    fixtures: [...layoutState.layout.fixtures],
+    decor: [...(layoutState.layout.decor || [])],
+    ceremonyRows: [...(layoutState.layout.ceremonyRows || [])],
+    timestamp: Date.now(),
+  }), [layoutState.layout]);
 
-  const handleRestoreSnapshot = useCallback((snapshot: { tables: any[]; fixtures: any[]; decor: any[] }) => {
-    layoutState.updateLayout({ tables: snapshot.tables, fixtures: snapshot.fixtures, decor: snapshot.decor || [], });
+  const pushUndoSnapshot = useCallback(() => {
+    propertyEditUndoRef.current = null;
+    emit('spm_push_undo_snapshot', captureUndoSnapshot());
+  }, [captureUndoSnapshot]);
+
+  // Canvas drags and keyboard nudges validate inside handleMoveItem. Stage the
+  // pre-action state first, but only commit it to history once a move is accepted;
+  // rejected boundary/collision attempts must not create no-op Undo entries.
+  const prepareMoveUndoSnapshot = useCallback(() => {
+    pendingMoveUndoRef.current = captureUndoSnapshot();
+  }, [captureUndoSnapshot]);
+  const commitMoveUndoSnapshot = useCallback(() => {
+    const snapshot = pendingMoveUndoRef.current;
+    if (!snapshot) return;
+    pendingMoveUndoRef.current = null;
+    propertyEditUndoRef.current = null;
+    emit('spm_push_undo_snapshot', snapshot);
+  }, []);
+
+  const handleRestoreSnapshot = useCallback((snapshot: { tables: any[]; fixtures: any[]; decor: any[]; ceremonyRows?: any[] }) => {
+    propertyEditUndoRef.current = null;
+    pendingMoveUndoRef.current = null;
+    layoutState.updateLayout({ tables: snapshot.tables, fixtures: snapshot.fixtures, decor: snapshot.decor || [], ceremonyRows: snapshot.ceremonyRows || [] });
   }, [layoutState]);
 
   // Clear the whole layout as a single undoable action. Previously it called
   // clearLayout() directly with no undo snapshot, so an accidental "Clear All
   // Items" was irreversible (unlike single-item delete).
   const handleClearLayout = useCallback(() => {
+    if (!ensureCanEditLayout()) return;
     const hasItems =
       layoutState.layout.tables.length > 0 ||
       layoutState.layout.fixtures.length > 0 ||
-      (layoutState.layout.decor || []).length > 0;
+      (layoutState.layout.decor || []).length > 0 ||
+      (layoutState.layout.ceremonyRows || []).length > 0;
     if (!hasItems) return;
     pushUndoSnapshot();
     layoutState.clearLayout();
     showToast('Layout cleared.', 'success');
-  }, [layoutState, pushUndoSnapshot]);
+  }, [layoutState, pushUndoSnapshot, ensureCanEditLayout]);
 
-  // Delete/duplicate via the Properties panel must be undoable, matching the
-  // keyboard shortcuts (Delete / Ctrl+D) which already push an undo snapshot.
+  // Properties-panel deletion is permission-checked and undoable.
   const handleRemoveItem = useCallback((id: string) => {
+    if (!ensureCanEditLayout()) return;
+    const exists = layoutState.layout.tables.some((item) => item.id === id)
+      || layoutState.layout.fixtures.some((item) => item.id === id)
+      || (layoutState.layout.decor || []).some((item) => item.id === id);
+    if (!exists) return;
     pushUndoSnapshot();
     layoutState.removeItem(id);
-  }, [layoutState, pushUndoSnapshot]);
-
-  const handleDuplicateItem = useCallback((id: string) => {
-    pushUndoSnapshot();
-    layoutState.duplicateItem(id);
-  }, [layoutState, pushUndoSnapshot]);
-
-  async function handleAutoRepair() {
-    await createEmergencyRecoverySnapshot({ id: user.id, name: user.name });
-    const repaired = recoverCorruptDomains();
-    const report = buildProjectHealthReport();
-    setProjectHealth(report);
-    setSafeMode(report.overallStatus === 'corrupt');
-    emitDataChanged('all');
-    showToast(`Recovered ${repaired.length} damaged data area(s).`, 'warning');
-  }
+  }, [layoutState, pushUndoSnapshot, ensureCanEditLayout]);
 
   useEffect(() => {
     return subscribeToCollaborationEvents((event) => {
@@ -690,88 +848,430 @@ export default function AuthenticatedApp() {
       }),
     ];
     return () => offs.forEach((off) => off());
-  }, [open, closeAll]);
+  }, [open, closeAll, setEditingArrangementId]);
 
   // Couples booked into the current space (venue-side verification). Lets the
   // venue admin confirm the placed seating will seat every couple's expected
   // guest count for this space — guest mgmt lives in the couples portal.
-  const spaceCouples = useMemo(
-    () => getCoupleEvents().filter((ev) => (ev.selectedSpaces || []).includes(layoutState.currentVenue.id)),
-    [layoutState.currentVenue.id],
+  const getTotalCapacity = useCallback(
+    () => layoutSeatCount(
+      layoutState.layout.tables,
+      getTableSpecs(),
+      layoutState.layout.ceremonyRows || [],
+    ),
+    [layoutState.layout.ceremonyRows, layoutState.layout.tables],
   );
-  const getTotalCapacity = useCallback(() => {
-    const tableSpecs = getTableSpecs();
-    return layoutState.layout.tables.reduce((sum, table) => {
-      const spec = tableSpecs.find(s => s.id === table.specId);
-      if (!spec) return sum;
-      // Mirror the GuestPanel capacity logic so the on-canvas counter agrees
-      // with the guest panel: seating rows = chairCount×rowCount; otherwise
-      // customCapacity overrides the spec capacity.
-      if (spec.isSeatingType) {
-        const perRow = table.chairCount ?? table.customCapacity ?? spec.capacity ?? 0;
-        const rowCount = Math.max(1, spec.seatingRowCount || 1);
-        return sum + perRow * rowCount;
-      }
-      return sum + (table.customCapacity ?? spec.capacity ?? 0);
-    }, 0);
-  }, [layoutState.layout.tables]);
 
   const handleDragStart = useCallback((type: 'table' | 'fixture' | 'arrangement', specId: string, isExterior?: boolean) => {
+    if (!ensureCanEditLayout()) return;
     setDragItem({ type, specId, isExterior });
-  }, []);
+  }, [ensureCanEditLayout]);
 
-  const handleDragEnd = useCallback(() => setDragItem(null), []);
+  // Native dragend fires after both successful and rejected drops, so it is not
+  // a reliable placement outcome. handleDrop owns one-shot completion while a
+  // rejected boundary/target drop deliberately leaves the guided mode active.
+  const handleDragEnd = useCallback(() => undefined, []);
 
   const applyGridSnap = useCallback((position: Position): Position => {
     if (!snapToGrid) return position;
     return { x: Math.round(position.x / gridSize) * gridSize, y: Math.round(position.y / gridSize) * gridSize, };
   }, [snapToGrid, gridSize]);
 
-  const resolvePlacement = useCallback((rawPosition: Position, item: { kind: 'table' | 'fixture' | 'arrangement'; specId: string; isExterior?: boolean; id?: string; showChairs?: boolean; chairType?: string; chairLayout?: any }, opts?: { silent?: boolean }) => {
+  const showCollisionWarning = useCallback((message: string) => {
+    if (getSpacingSettings().showCollisionWarnings === false) return;
+    showToast(message, 'warning', { duration: 1500, dismissible: false });
+  }, []);
+
+  const resolvePlacement = useCallback((rawPosition: Position, item: { kind: 'table' | 'fixture'; specId: string; isExterior?: boolean; id?: string; showChairs?: boolean; chairType?: string; chairCount?: number; customCapacity?: number; chairLayout?: any; rotation?: number }, opts?: { silent?: boolean; exact?: boolean }) => {
     const venue = layoutState.currentVenue;
-    const snapped = applyGridSnap({ ...rawPosition });
-    const normalized = !!item.isExterior ? { x: Math.max(0, Math.min(snapped.x, (venue.canvasWidth || venue.width + 80) - 5)), y: Math.max(0, Math.min(snapped.y, (venue.canvasHeight || venue.height + 80) - 5)), } : { x: Math.max(0, Math.min(snapped.x, venue.width - 2)), y: Math.max(0, Math.min(snapped.y, venue.height - 2)), };
+    const position = opts?.exact ? { ...rawPosition } : applyGridSnap({ ...rawPosition });
+    const { canvasWidth, canvasHeight } = effectiveCanvasGeometry(venue);
     if (item.kind === 'table') {
-      const collision = checkTableCollision({ x: normalized.x, y: normalized.y, specId: item.specId, showChairs: item.showChairs ?? true, chairType: item.chairType ?? 'white-plastic', chairLayout: item.chairLayout ?? 'all-sides', }, layoutState.layout.tables, layoutState.layout.fixtures, venue, item.id);
-      if (collision.collides) {
-        if (!opts?.silent) showToast(collision.wallError || collision.details || `Cannot place table here.`, 'warning');
-        return { ok: false as const, position: normalized };
+      const spec = getTableSpecs().find((candidate) => candidate.id === item.specId);
+      const candidate = {
+        x: position.x,
+        y: position.y,
+        specId: item.specId,
+        showChairs: item.showChairs ?? true,
+        chairType: item.chairType ?? spec?.defaultChairType ?? 'white-plastic',
+        chairCount: item.chairCount ?? item.customCapacity ?? spec?.capacity ?? 0,
+        customCapacity: item.customCapacity,
+        chairLayout: item.chairLayout ?? spec?.defaultChairLayout ?? 'all-sides',
+        rotation: item.rotation ?? 0,
+      };
+      const footprint = getTableFootprintPolygon(candidate);
+      if (footprint.length > 0 && !footprintFitsVenue(footprint, venue, 0)) {
+        if (!opts?.silent) showCollisionWarning('The full table and chair footprint must stay inside the venue boundary.');
+        return { ok: false as const, position };
       }
-      return { ok: true as const, position: normalized };
+      const collision = checkTableCollision(
+        candidate,
+        layoutState.layout.tables,
+        layoutState.layout.fixtures,
+        venue,
+        item.id,
+      );
+      if (collision.collides) {
+        if (!opts?.silent) showCollisionWarning(collision.wallError || collision.details || 'Cannot place table here.');
+        return { ok: false as const, position };
+      }
+      return { ok: true as const, position };
     }
-    const collision = checkFixtureCollision({ x: normalized.x, y: normalized.y, specId: item.specId, isExterior: !!item.isExterior }, layoutState.layout.tables, layoutState.layout.fixtures, venue, item.id);
+    const candidate = {
+      x: position.x,
+      y: position.y,
+      specId: item.specId,
+      isExterior: !!item.isExterior,
+      rotation: item.rotation ?? 0,
+    };
+    const footprint = getFixtureFootprintPolygon(candidate);
+    const insideBoundary = item.isExterior
+      ? footprint.every((point) => point.x >= 0
+          && point.y >= 0
+          && point.x <= canvasWidth
+          && point.y <= canvasHeight)
+      : footprintFitsVenue(footprint, venue, 0);
+    if (!insideBoundary) {
+      if (!opts?.silent) {
+        showCollisionWarning(`The full item footprint must stay inside the ${item.isExterior ? 'canvas' : 'venue'} boundary.`);
+      }
+      return { ok: false as const, position };
+    }
+    const collision = checkFixtureCollision(
+      candidate,
+      layoutState.layout.tables,
+      layoutState.layout.fixtures,
+      venue,
+      item.id,
+    );
     if (collision.collides) {
-      if (!opts?.silent) showToast(collision.wallError || collision.details || 'Cannot place item here.', 'warning');
-      return { ok: false as const, position: normalized };
+      if (!opts?.silent) showCollisionWarning(collision.wallError || collision.details || 'Cannot place item here.');
+      return { ok: false as const, position };
     }
-    return { ok: true as const, position: normalized };
-  }, [layoutState, applyGridSnap]);
+    return { ok: true as const, position };
+  }, [layoutState, applyGridSnap, showCollisionWarning]);
+
+  const handleDuplicateItem = useCallback((id: string) => {
+    if (!ensureCanEditLayout()) return;
+    const tableSpecs = getTableSpecs();
+    const fixtureTypes = getFixtureTypes();
+    const chairSpecs = getChairSpecs();
+    const decorItems = getDecorItems();
+    const arrangements = getDecorArrangements();
+    const table = layoutState.layout.tables.find((candidate) => candidate.id === id);
+    const fixture = layoutState.layout.fixtures.find((candidate) => candidate.id === id);
+    const decor = (layoutState.layout.decor || []).find((candidate) => candidate.id === id);
+    if (!table && !fixture && !decor) return;
+
+    if (table) {
+      const inventoryIssue = tablePlacementInventoryIssue(
+        table,
+        layoutState.layout.tables,
+        tableSpecs,
+        chairSpecs,
+      );
+      if (inventoryIssue) {
+        showToast(inventoryIssue.replace('Placing this', 'Duplicating this'), 'warning');
+        return;
+      }
+      if (table.appliedArrangementId) {
+        const decorIssue = arrangementPlacementInventoryIssue(
+          table.appliedArrangementId,
+          layoutState.layout.tables,
+          layoutState.layout.fixtures,
+          layoutState.layout.decor || [],
+          arrangements,
+          decorItems,
+        );
+        if (decorIssue) {
+          showToast(`Cannot duplicate the applied design. ${decorIssue}`, 'warning');
+          return;
+        }
+      }
+
+      const tableSpec = tableSpecs.find((candidate) => candidate.id === table.specId);
+      const appliedArrangement = arrangements.find((candidate) => candidate.id === table.appliedArrangementId);
+      const position = nearbyDuplicatePositions(table.x, table.y).find((candidate) => {
+        const placement = resolvePlacement(
+          candidate,
+          {
+            kind: 'table',
+            specId: table.specId,
+            showChairs: table.showChairs,
+            chairType: table.chairType,
+            chairCount: table.chairCount,
+            customCapacity: table.customCapacity,
+            chairLayout: table.chairLayout,
+            rotation: table.rotation,
+          },
+          { silent: true, exact: true },
+        );
+        if (!placement.ok) return false;
+        if (!appliedArrangement || !tableSpec) return true;
+        return appliedArrangementFootprints(
+          { ...table, x: candidate.x, y: candidate.y },
+          tableSpec,
+          appliedArrangement,
+          decorItems,
+        ).every((component) => footprintFitsVenue(component.polygon, layoutState.currentVenue, 0));
+      });
+      if (!position) {
+        showCollisionWarning('No collision-free location is available nearby for this table copy.');
+        return;
+      }
+      pushUndoSnapshot();
+      layoutState.duplicateItem(id, position);
+      return;
+    }
+
+    if (fixture) {
+      const spec = fixtureTypes.find((candidate) => candidate.id === fixture.specId);
+      const inventoryIssue = fixturePlacementInventoryIssue(
+        fixture.specId,
+        !!fixture.isExterior,
+        layoutState.layout.fixtures,
+        fixtureTypes,
+      );
+      if (inventoryIssue) {
+        showToast(inventoryIssue, 'warning');
+        return;
+      }
+      if (spec?.isPermanent) {
+        showToast('Permanent venue features cannot be duplicated from the layout.', 'warning');
+        return;
+      }
+      if (fixture.appliedArrangementId) {
+        const decorIssue = arrangementPlacementInventoryIssue(
+          fixture.appliedArrangementId,
+          layoutState.layout.tables,
+          layoutState.layout.fixtures,
+          layoutState.layout.decor || [],
+          arrangements,
+          decorItems,
+        );
+        if (decorIssue) {
+          showToast(`Cannot duplicate the applied design. ${decorIssue}`, 'warning');
+          return;
+        }
+      }
+      const venue = layoutState.currentVenue;
+      const { canvasWidth, canvasHeight } = effectiveCanvasGeometry(venue);
+      const appliedArrangement = arrangements.find((candidate) => candidate.id === fixture.appliedArrangementId);
+      const position = nearbyDuplicatePositions(fixture.x, fixture.y).find((candidate) => {
+        const placed = { ...fixture, x: candidate.x, y: candidate.y };
+        const baseFits = fixture.isExterior
+          ? getFixtureFootprintPolygon(placed).every((point) => point.x >= 0 && point.y >= 0 && point.x <= canvasWidth && point.y <= canvasHeight)
+          : resolvePlacement(
+              candidate,
+              { kind: 'fixture', specId: fixture.specId, isExterior: false, rotation: fixture.rotation },
+              { silent: true, exact: true },
+            ).ok;
+        if (!baseFits) return false;
+        if (!appliedArrangement || !spec) return true;
+        const components = appliedArrangementFootprints(placed, spec, appliedArrangement, decorItems);
+        return fixture.isExterior
+          ? components.every((component) => component.polygon.every((point) => point.x >= 0
+              && point.y >= 0
+              && point.x <= canvasWidth
+              && point.y <= canvasHeight))
+          : components.every((component) => footprintFitsVenue(component.polygon, venue, 0));
+      });
+      if (!position) {
+        showCollisionWarning('No collision-free location is available nearby for this item copy.');
+        return;
+      }
+      pushUndoSnapshot();
+      layoutState.duplicateItem(id, position);
+      return;
+    }
+
+    if (decor) {
+      const spec = decorItems.find((candidate) => candidate.id === decor.decorItemId);
+      const inventoryIssue = decorPlacementInventoryIssue(
+        decor.decorItemId,
+        layoutState.layout.decor || [],
+        decorItems,
+        layoutState.layout.tables,
+        layoutState.layout.fixtures,
+        arrangements,
+      );
+      if (inventoryIssue || !spec) {
+        showToast(inventoryIssue || 'This decor cannot be duplicated because its catalog definition is missing.', 'warning');
+        return;
+      }
+      const venue = layoutState.currentVenue;
+      const { canvasWidth, canvasHeight, venueX, venueY } = effectiveCanvasGeometry(venue);
+      const width = Math.max(0.01, (spec.width + (spec.widthInches || 0) / 12) * Math.abs(Number.isFinite(decor.scaleX) ? decor.scaleX : 1));
+      const height = Math.max(0.01, (spec.height + (spec.heightInches || 0) / 12) * Math.abs(Number.isFinite(decor.scaleY) ? decor.scaleY : 1));
+      const position = nearbyDuplicatePositions(decor.x, decor.y).find((candidate) => {
+        const footprint = rotatedBoxPolygon(
+          { x: candidate.x, y: candidate.y, width, height },
+          { x: candidate.x + width / 2, y: candidate.y + height / 2 },
+          decor.rotation || 0,
+        );
+        if (decor.parentType !== 'canvas' && !footprintFitsVenue(footprint, venue, 0)) return false;
+        const offsetX = decor.parentType === 'canvas' ? 0 : venueX;
+        const offsetY = decor.parentType === 'canvas' ? 0 : venueY;
+        return footprint.every((point) => point.x + offsetX >= 0
+          && point.y + offsetY >= 0
+          && point.x + offsetX <= canvasWidth
+          && point.y + offsetY <= canvasHeight);
+      });
+      if (!position) {
+        showCollisionWarning('No in-bounds location is available nearby for this decor copy.');
+        return;
+      }
+      pushUndoSnapshot();
+      layoutState.duplicateItem(id, position);
+    }
+  }, [ensureCanEditLayout, layoutState, pushUndoSnapshot, resolvePlacement, showCollisionWarning]);
+
+  const appliedDesignIssue = useCallback((
+    target: typeof layoutState.layout.tables[number] | typeof layoutState.layout.fixtures[number],
+    arrangementId: string,
+    options: { checkInventory?: boolean } = {},
+  ): string | null => {
+    const arrangement = getDecorArrangements().find((candidate) => candidate.id === arrangementId);
+    if (!arrangement) return 'This decor design no longer exists.';
+    const isTable = target.type === 'table';
+    if ((isTable && arrangement.baseType !== 'table') || (!isTable && arrangement.baseType === 'table')) {
+      return `This ${arrangement.baseType} design is not compatible with the selected ${isTable ? 'table' : 'fixture'}.`;
+    }
+    const spec = isTable
+      ? getTableSpecs().find((candidate) => candidate.id === target.specId)
+      : getFixtureTypes().find((candidate) => candidate.id === target.specId);
+    if (!spec) return 'The selected item’s catalog definition is missing.';
+    if (arrangement.baseSpecId && arrangement.baseSpecId !== spec.id) {
+      return 'This design was created for a different base item.';
+    }
+    if (!isTable && arrangement.baseType === 'arch') {
+      const fixtureSpec = spec as ReturnType<typeof getFixtureTypes>[number];
+      if (!fixtureSpec.allowAsDecorBase && !fixtureSpec.name.toLowerCase().includes('arch')) {
+        return 'This arch design requires a compatible arch fixture.';
+      }
+    }
+
+    const footprints = appliedArrangementFootprints(target, spec, arrangement, getDecorItems());
+    const venue = layoutState.currentVenue;
+    if (!isTable && target.isExterior) {
+      const { canvasWidth, canvasHeight } = effectiveCanvasGeometry(venue);
+      if (footprints.some((item) => item.polygon.some((point) => point.x < 0 || point.y < 0 || point.x > canvasWidth || point.y > canvasHeight))) {
+        return 'This decor design would extend beyond the canvas boundary.';
+      }
+    } else if (footprints.some((item) => !footprintFitsVenue(item.polygon, venue, 0))) {
+      return 'This decor design would extend beyond the venue boundary.';
+    }
+
+    if (options.checkInventory === false) return null;
+    return arrangementPlacementInventoryIssue(
+      arrangement.id,
+      layoutState.layout.tables,
+      layoutState.layout.fixtures,
+      layoutState.layout.decor || [],
+      getDecorArrangements(),
+      getDecorItems(),
+      target.id,
+    );
+  }, [layoutState]);
 
   const handleDrop = useCallback((position: Position, isExterior?: boolean) => {
     if (!ensureCanEditLayout()) return;
     if (!dragItem) return;
     if (dragItem.type === 'arrangement') {
-      const { x, y } = position;
-      const targetTable = layoutState.layout.tables.find(t => {
-        const spec = getTableSpecs().find(s => s.id === t.specId);
-        return spec && x >= t.x && x <= t.x + spec.width && y >= t.y && y <= t.y + spec.height;
-      });
-      if (targetTable) {
-        pushUndoSnapshot();
-        layoutState.updateTable(targetTable.id, { appliedArrangementId: dragItem.specId });
-        showToast(`Applied design to ${targetTable.label}`, 'success');
-        setDragItem(null); return;
+      const arrangement = getDecorArrangements().find((candidate) => candidate.id === dragItem.specId);
+      if (!arrangement) {
+        showToast('This decor design no longer exists.', 'warning');
+        setDragItem(null);
+        return;
       }
-      showToast('To apply a design, drop it onto a table.', 'info');
-      setDragItem(null); return;
+      const point = { x: position.x, y: position.y };
+      const {
+        venueX: venueOffsetX,
+        venueY: venueOffsetY,
+      } = effectiveCanvasGeometry(layoutState.currentVenue);
+      const venuePoint = isExterior
+        ? { x: point.x - venueOffsetX, y: point.y - venueOffsetY }
+        : point;
+      const venueCanvasPoint = isExterior
+        ? point
+        : { x: point.x + venueOffsetX, y: point.y + venueOffsetY };
+      const tableSpecs = getTableSpecs();
+      const fixtureTypes = getFixtureTypes();
+      const targetTable = arrangement.baseType === 'table'
+        ? layoutState.layout.tables.find((table) => {
+            const spec = tableSpecs.find((candidate) => candidate.id === table.specId);
+            if (!spec || (arrangement.baseSpecId && arrangement.baseSpecId !== spec.id)) return false;
+            const dimensions = appliedArrangementBaseDimensions(table, spec);
+            return pointInPolygon(venuePoint, rotatedBoxPolygon(
+              { x: table.x, y: table.y, width: dimensions.width, height: dimensions.height },
+              { x: table.x + dimensions.width / 2, y: table.y + dimensions.height / 2 },
+              table.rotation || 0,
+            ));
+          })
+        : undefined;
+      const targetFixture = arrangement.baseType !== 'table'
+        ? layoutState.layout.fixtures.find((fixture) => {
+            const spec = fixtureTypes.find((candidate) => candidate.id === fixture.specId);
+            if (!spec || (arrangement.baseSpecId && arrangement.baseSpecId !== spec.id)) return false;
+            if (arrangement.baseType === 'arch' && !spec.allowAsDecorBase && !spec.name.toLowerCase().includes('arch')) return false;
+            return pointInPolygon(fixture.isExterior ? venueCanvasPoint : venuePoint, rotatedBoxPolygon(
+              { x: fixture.x, y: fixture.y, width: spec.width, height: spec.height },
+              { x: fixture.x + spec.width / 2, y: fixture.y + spec.height / 2 },
+              fixture.rotation || 0,
+            ));
+          })
+        : undefined;
+      const target = targetTable || targetFixture;
+      if (!target) {
+        showToast(`Drop this ${arrangement.baseType} design onto a compatible ${arrangement.baseType === 'table' ? 'table' : 'fixture'}.`, 'info');
+        return;
+      }
+      const designIssue = appliedDesignIssue(target, arrangement.id);
+      if (designIssue) {
+        const isBoundaryIssue = designIssue.includes('boundary');
+        if (isBoundaryIssue) showCollisionWarning(designIssue);
+        else showToast(designIssue, 'warning');
+        // A boundary miss can be repaired by choosing another target; an
+        // inventory/catalog failure cannot succeed without leaving this mode.
+        if (!isBoundaryIssue) setDragItem(null);
+        return;
+      }
+      pushUndoSnapshot();
+      if (targetTable) layoutState.updateTable(targetTable.id, { appliedArrangementId: arrangement.id });
+      else if (targetFixture) layoutState.updateFixture(targetFixture.id, { appliedArrangementId: arrangement.id });
+      showToast(`Applied ${arrangement.name} to ${target.label}.`, 'success');
+      if (!keepAdding) setDragItem(null);
+      return;
     }
-    const placement = resolvePlacement(position, { kind: dragItem.type, specId: dragItem.specId, isExterior: !!(dragItem.isExterior || isExterior), });
+    const exterior = !!(dragItem.isExterior || isExterior);
+    const inventoryIssue = dragItem.type === 'table'
+      ? tablePlacementInventoryIssue(
+          { specId: dragItem.specId },
+          layoutState.layout.tables,
+          getTableSpecs(),
+          getChairSpecs(),
+        )
+      : fixturePlacementInventoryIssue(
+          dragItem.specId,
+          exterior,
+          layoutState.layout.fixtures,
+          getFixtureTypes(),
+        );
+    if (inventoryIssue) {
+      showToast(inventoryIssue, 'warning');
+      setDragItem(null);
+      return;
+    }
+    const placement = resolvePlacement(position, { kind: dragItem.type, specId: dragItem.specId, isExterior: exterior });
     if (!placement.ok) return;
     pushUndoSnapshot();
     if (dragItem.type === 'table') layoutState.addTable(dragItem.specId, placement.position);
-    else layoutState.addFixture(dragItem.specId, placement.position, dragItem.isExterior);
-    setDragItem(null); setShowProperties(true);
-  }, [dragItem, layoutState, resolvePlacement, ensureCanEditLayout]);
+    else layoutState.addFixture(dragItem.specId, placement.position, exterior);
+    if (!keepAdding) {
+      setDragItem(null);
+      setShowProperties(true);
+    }
+  }, [dragItem, layoutState, resolvePlacement, ensureCanEditLayout, pushUndoSnapshot, keepAdding, appliedDesignIssue, showCollisionWarning]);
 
   const handleSelectItem = useCallback((id: string | null) => layoutState.setSelectedId(id), [layoutState]);
   const handleDoubleClickItem = useCallback((id: string) => { layoutState.setSelectedId(id); setShowProperties(true); }, [layoutState]);
@@ -779,22 +1279,74 @@ export default function AuthenticatedApp() {
   // A single undo snapshot is pushed once per interaction (at drag start, via
   // onDragStart, or once per discrete arrow-key nudge) so that Undo rewinds an
   // entire drag as one step rather than hundreds of per-mousemove snapshots.
-  const handleMoveItem = useCallback((id: string, position: Position, isExterior?: boolean) => {
+  const handleMoveItem = useCallback((id: string, position: Position, isExterior?: boolean, exact = false) => {
     if (!ensureCanEditLayout()) return;
     const table = layoutState.layout.tables.find(t => t.id === id);
     if (table) {
-      const placement = resolvePlacement(position, { kind: 'table', id, specId: table.specId, isExterior: false, }, { silent: true });
-      if (placement.ok) { layoutState.updateTable(id, { x: placement.position.x, y: placement.position.y }); }
+      const placement = resolvePlacement(position, {
+        kind: 'table',
+        id,
+        specId: table.specId,
+        showChairs: table.showChairs,
+        chairType: table.chairType,
+        chairCount: table.chairCount,
+        customCapacity: table.customCapacity,
+        chairLayout: table.chairLayout,
+        rotation: table.rotation,
+      }, { silent: true, exact });
+      if (placement.ok) {
+        if (placement.position.x === table.x && placement.position.y === table.y) return;
+        const candidate = { ...table, x: placement.position.x, y: placement.position.y };
+        if (!table.appliedArrangementId
+          || !appliedDesignIssue(candidate, table.appliedArrangementId, { checkInventory: false })) {
+          commitMoveUndoSnapshot();
+          layoutState.updateTable(id, { x: placement.position.x, y: placement.position.y });
+        }
+      }
       return;
     }
     const fixture = layoutState.layout.fixtures.find(f => f.id === id);
     if (fixture) {
       const spec = getFixtureTypes().find(s => s.id === fixture.specId);
       if (spec?.isPermanent || !canMoveFixture(user, spec!)) { showToast('Cannot move this fixture.', 'warning'); return; }
-      const placement = resolvePlacement(position, { kind: 'fixture', id, specId: fixture.specId, isExterior: !!(fixture.isExterior || isExterior), }, { silent: true });
-      if (placement.ok) { layoutState.updateFixture(id, { x: placement.position.x, y: placement.position.y }); }
+      const placement = resolvePlacement(position, { kind: 'fixture', id, specId: fixture.specId, isExterior: !!(fixture.isExterior || isExterior), rotation: fixture.rotation }, { silent: true, exact });
+      if (placement.ok) {
+        if (placement.position.x === fixture.x && placement.position.y === fixture.y) return;
+        const candidate = { ...fixture, x: placement.position.x, y: placement.position.y };
+        if (!fixture.appliedArrangementId
+          || !appliedDesignIssue(candidate, fixture.appliedArrangementId, { checkInventory: false })) {
+          commitMoveUndoSnapshot();
+          layoutState.updateFixture(id, { x: placement.position.x, y: placement.position.y });
+        }
+      }
+      return;
     }
-  }, [layoutState, resolvePlacement, user, ensureCanEditLayout]);
+    const decor = (layoutState.layout.decor || []).find((candidate) => candidate.id === id);
+    if (decor) {
+      if (position.x === decor.x && position.y === decor.y) return;
+      const spec = getDecorItems().find((candidate) => candidate.id === decor.decorItemId);
+      if (!spec) return;
+      const width = Math.max(0.01, (spec.width + (spec.widthInches || 0) / 12) * Math.abs(Number.isFinite(decor.scaleX) ? decor.scaleX : 1));
+      const height = Math.max(0.01, (spec.height + (spec.heightInches || 0) / 12) * Math.abs(Number.isFinite(decor.scaleY) ? decor.scaleY : 1));
+      const footprint = rotatedBoxPolygon(
+        { x: position.x, y: position.y, width, height },
+        { x: position.x + width / 2, y: position.y + height / 2 },
+        decor.rotation || 0,
+      );
+      const venue = layoutState.currentVenue;
+      const { canvasWidth, canvasHeight, venueX, venueY } = effectiveCanvasGeometry(venue);
+      const venueBound = decor.parentType !== 'canvas';
+      if (venueBound && !footprintFitsVenue(footprint, venue, 0)) return;
+      const offsetX = venueBound ? venueX : 0;
+      const offsetY = venueBound ? venueY : 0;
+      if (!footprint.every((point) => point.x + offsetX >= 0
+        && point.y + offsetY >= 0
+        && point.x + offsetX <= canvasWidth
+        && point.y + offsetY <= canvasHeight)) return;
+      commitMoveUndoSnapshot();
+      layoutState.updateDecor(id, position);
+    }
+  }, [layoutState, resolvePlacement, user, ensureCanEditLayout, appliedDesignIssue, commitMoveUndoSnapshot]);
 
   // Push an undo snapshot for a property-panel edit, coalescing bursts to the
   // same item within a short window so typing a label is ~1 step, not per-keystroke.
@@ -810,29 +1362,281 @@ export default function AuthenticatedApp() {
     if (!ensureCanEditLayout()) return;
     const existing = layoutState.layout.tables.find(t => t.id === id);
     if (!existing) return;
-    if (updates.x !== undefined || updates.y !== undefined) {
-      const placement = resolvePlacement({ x: updates.x ?? existing.x, y: updates.y ?? existing.y }, { kind: 'table', id, specId: existing.specId, ...updates });
-      if (placement.ok) { pushUndoSnapshot(); layoutState.updateTable(id, { ...updates, x: placement.position.x, y: placement.position.y }); }
+    const candidate = { ...existing, ...updates };
+    const changesPhysicalGeometry = [
+      'x',
+      'y',
+      'rotation',
+      'chairCount',
+      'customCapacity',
+      'chairType',
+      'chairLayout',
+    ].some((key) => Object.prototype.hasOwnProperty.call(updates, key));
+    const changesChairAllocation = ['chairCount', 'customCapacity', 'chairType']
+      .some((key) => Object.prototype.hasOwnProperty.call(updates, key));
+    if (changesChairAllocation) {
+      const inventoryIssue = tablePlacementInventoryIssue(
+        candidate,
+        layoutState.layout.tables,
+        getTableSpecs(),
+        getChairSpecs(),
+        id,
+      );
+      if (inventoryIssue) {
+        showToast(inventoryIssue.replace('Placing this', 'Updating this'), 'warning');
+        return;
+      }
+    }
+    const changesAppliedArrangement = Object.prototype.hasOwnProperty.call(updates, 'appliedArrangementId')
+      && candidate.appliedArrangementId !== existing.appliedArrangementId;
+    if (candidate.appliedArrangementId && (changesPhysicalGeometry || changesAppliedArrangement)) {
+      const designIssue = appliedDesignIssue(candidate, candidate.appliedArrangementId, {
+        checkInventory: changesAppliedArrangement,
+      });
+      if (designIssue) {
+        if (designIssue.includes('boundary')) showCollisionWarning(designIssue);
+        else showToast(designIssue, 'warning');
+        return;
+      }
+    }
+    if (changesPhysicalGeometry) {
+      const placement = resolvePlacement(
+        { x: candidate.x, y: candidate.y },
+        {
+          kind: 'table',
+          id,
+          specId: candidate.specId,
+          showChairs: candidate.showChairs,
+          chairType: candidate.chairType,
+          chairCount: candidate.chairCount,
+          customCapacity: candidate.customCapacity,
+          chairLayout: candidate.chairLayout,
+          rotation: candidate.rotation,
+        },
+        { exact: true },
+      );
+      if (placement.ok) {
+        pushUndoSnapshot();
+        layoutState.updateTable(id, { ...updates, x: placement.position.x, y: placement.position.y });
+      }
       return;
     }
-    // Metadata/property edits (label, linen, chairs, applied design) are undoable
-    // too — coalesced so rapid typing doesn't flood history.
+    // Metadata/property edits (label, linen, visual chair toggle, applied design)
+    // are undoable too — coalesced so rapid typing doesn't flood history.
     pushPropertyUndo(id);
     layoutState.updateTable(id, updates);
-  }, [layoutState, resolvePlacement, ensureCanEditLayout, pushPropertyUndo]);
+  }, [layoutState, resolvePlacement, ensureCanEditLayout, pushPropertyUndo, pushUndoSnapshot, appliedDesignIssue, showCollisionWarning]);
 
   const handleUpdateFixtureSafe = useCallback((id: string, updates: Partial<any>) => {
     if (!ensureCanEditLayout()) return;
     const existing = layoutState.layout.fixtures.find(f => f.id === id);
     if (!existing) return;
-    if (updates.x !== undefined || updates.y !== undefined) {
-      const placement = resolvePlacement({ x: updates.x ?? existing.x, y: updates.y ?? existing.y }, { kind: 'fixture', id, specId: existing.specId, ...updates });
-      if (placement.ok) { pushUndoSnapshot(); layoutState.updateFixture(id, { ...updates, x: placement.position.x, y: placement.position.y }); }
+    const candidate = { ...existing, ...updates };
+    const changesPhysicalGeometry = ['x', 'y', 'rotation']
+      .some((key) => Object.prototype.hasOwnProperty.call(updates, key));
+    const changesAppliedArrangement = Object.prototype.hasOwnProperty.call(updates, 'appliedArrangementId')
+      && candidate.appliedArrangementId !== existing.appliedArrangementId;
+    if (candidate.appliedArrangementId && (changesPhysicalGeometry || changesAppliedArrangement)) {
+      const designIssue = appliedDesignIssue(candidate, candidate.appliedArrangementId, {
+        checkInventory: changesAppliedArrangement,
+      });
+      if (designIssue) {
+        if (designIssue.includes('boundary')) showCollisionWarning(designIssue);
+        else showToast(designIssue, 'warning');
+        return;
+      }
+    }
+    if (changesPhysicalGeometry) {
+      const placement = resolvePlacement(
+        { x: candidate.x, y: candidate.y },
+        { kind: 'fixture', id, specId: candidate.specId, isExterior: !!candidate.isExterior, rotation: candidate.rotation },
+        { exact: true },
+      );
+      if (placement.ok) {
+        pushUndoSnapshot();
+        layoutState.updateFixture(id, { ...updates, x: placement.position.x, y: placement.position.y });
+      }
       return;
     }
     pushPropertyUndo(id);
     layoutState.updateFixture(id, updates);
-  }, [layoutState, resolvePlacement, ensureCanEditLayout, pushPropertyUndo]);
+  }, [layoutState, resolvePlacement, ensureCanEditLayout, pushPropertyUndo, pushUndoSnapshot, appliedDesignIssue, showCollisionWarning]);
+
+  const handleUpdateDecorSafe = useCallback((id: string, updates: Partial<any>) => {
+    if (!ensureCanEditLayout()) return;
+    const existing = (layoutState.layout.decor || []).find((candidate) => candidate.id === id);
+    if (!existing) return;
+    const candidate = { ...existing, ...updates };
+    const changesGeometry = ['x', 'y', 'rotation', 'scaleX', 'scaleY'].some((key) => updates[key] !== undefined);
+    if (changesGeometry) {
+      const spec = getDecorItems().find((item) => item.id === candidate.decorItemId);
+      if (!spec) {
+        showToast('Cannot update this decor because its catalog definition is missing.', 'warning');
+        return;
+      }
+      const width = Math.max(0.01, (spec.width + (spec.widthInches || 0) / 12) * Math.abs(Number.isFinite(candidate.scaleX) ? candidate.scaleX : 1));
+      const height = Math.max(0.01, (spec.height + (spec.heightInches || 0) / 12) * Math.abs(Number.isFinite(candidate.scaleY) ? candidate.scaleY : 1));
+      const footprint = rotatedBoxPolygon(
+        { x: candidate.x, y: candidate.y, width, height },
+        { x: candidate.x + width / 2, y: candidate.y + height / 2 },
+        candidate.rotation || 0,
+      );
+      const venue = layoutState.currentVenue;
+      const { canvasWidth, canvasHeight, venueX, venueY } = effectiveCanvasGeometry(venue);
+      const venueBound = candidate.parentType !== 'canvas';
+      const offsetX = venueBound ? venueX : 0;
+      const offsetY = venueBound ? venueY : 0;
+      const inVenue = !venueBound || footprintFitsVenue(footprint, venue, 0);
+      const inCanvas = footprint.every((point) => point.x + offsetX >= 0
+        && point.y + offsetY >= 0
+        && point.x + offsetX <= canvasWidth
+        && point.y + offsetY <= canvasHeight);
+      if (!inVenue || !inCanvas) {
+        showCollisionWarning('Decor must remain inside its venue or canvas boundary.');
+        return;
+      }
+    }
+    pushPropertyUndo(id);
+    layoutState.updateDecor(id, updates);
+  }, [ensureCanEditLayout, layoutState, pushPropertyUndo, showCollisionWarning]);
+
+  const handleRepairCatalogReference = useCallback((id: string, replacementId: string) => {
+    if (!ensureCanEditLayout()) return;
+    const table = layoutState.layout.tables.find((candidate) => candidate.id === id);
+    if (table) {
+      const spec = getTableSpecs().find((candidate) =>
+        candidate.id === replacementId && !candidate.archived);
+      if (!spec) {
+        showToast('The selected table replacement is no longer available.', 'warning');
+        return;
+      }
+      const repaired = {
+        ...table,
+        specId: spec.id,
+        chairCount: table.chairCount ?? table.customCapacity ?? configuredChairCount(table, null),
+        chairType: table.chairType || configuredChairType(table, null),
+        chairLayout: table.chairLayout || 'all-sides',
+        showChairs: table.showChairs ?? true,
+        appliedArrangementId: undefined,
+      };
+      const inventoryIssue = tablePlacementInventoryIssue(
+        repaired,
+        layoutState.layout.tables,
+        getTableSpecs(),
+        getChairSpecs(),
+        id,
+      );
+      if (inventoryIssue) {
+        showToast(inventoryIssue.replace('Placing this', 'Repairing this'), 'warning');
+        return;
+      }
+      const placement = resolvePlacement(
+        { x: repaired.x, y: repaired.y },
+        {
+          kind: 'table', id, specId: repaired.specId,
+          showChairs: repaired.showChairs, chairType: repaired.chairType,
+          chairCount: repaired.chairCount, customCapacity: repaired.customCapacity,
+          chairLayout: repaired.chairLayout, rotation: repaired.rotation,
+        },
+        { exact: true },
+      );
+      if (!placement.ok) return;
+      pushUndoSnapshot();
+      layoutState.updateTable(id, repaired);
+      showToast(`Catalog reference repaired with ${spec.name}.${table.appliedArrangementId ? ' The incompatible applied décor design was detached.' : ''}`, 'success');
+      return;
+    }
+
+    const fixture = layoutState.layout.fixtures.find((candidate) => candidate.id === id);
+    if (fixture) {
+      const spec = getFixtureTypes().find((candidate) =>
+        candidate.id === replacementId && !candidate.archived);
+      if (!spec) {
+        showToast('The selected fixture replacement is no longer available.', 'warning');
+        return;
+      }
+      const replacementExterior = !!spec.isExterior || spec.category === 'exterior';
+      if (!!fixture.isExterior !== replacementExterior) {
+        showToast('Choose a replacement with the same interior/exterior boundary semantics.', 'warning');
+        return;
+      }
+      const repaired = { ...fixture, specId: spec.id, appliedArrangementId: undefined };
+      const inventoryIssue = fixturePlacementInventoryIssue(
+        spec.id,
+        !!(fixture.isExterior || spec.isExterior || spec.category === 'exterior'),
+        layoutState.layout.fixtures.filter((candidate) => candidate.id !== id),
+        getFixtureTypes(),
+      );
+      if (inventoryIssue) {
+        showToast(inventoryIssue.replace('placed', 'used for this repair'), 'warning');
+        return;
+      }
+      const placement = resolvePlacement(
+        { x: repaired.x, y: repaired.y },
+        {
+          kind: 'fixture', id, specId: repaired.specId,
+          isExterior: !!(repaired.isExterior || spec.isExterior || spec.category === 'exterior'),
+          rotation: repaired.rotation,
+        },
+        { exact: true },
+      );
+      if (!placement.ok) return;
+      pushUndoSnapshot();
+      layoutState.updateFixture(id, repaired);
+      showToast(`Catalog reference repaired with ${spec.name}.${fixture.appliedArrangementId ? ' The incompatible applied décor design was detached.' : ''}`, 'success');
+      return;
+    }
+
+    const decor = (layoutState.layout.decor || []).find((candidate) => candidate.id === id);
+    if (!decor) return;
+    const spec = getDecorItems().find((candidate) =>
+      candidate.id === replacementId && !candidate.archived);
+    if (!spec) {
+      showToast('The selected décor replacement is no longer available.', 'warning');
+      return;
+    }
+    const inventoryIssue = decorPlacementInventoryIssue(
+      spec.id,
+      (layoutState.layout.decor || []).filter((candidate) => candidate.id !== id),
+      getDecorItems(),
+      layoutState.layout.tables,
+      layoutState.layout.fixtures,
+      getDecorArrangements(),
+    );
+    if (inventoryIssue) {
+      showToast(inventoryIssue.replace('placed', 'used for this repair'), 'warning');
+      return;
+    }
+    const width = Math.max(0.01, (spec.width + (spec.widthInches || 0) / 12)
+      * Math.abs(Number.isFinite(decor.scaleX) ? decor.scaleX : 1));
+    const height = Math.max(0.01, (spec.height + (spec.heightInches || 0) / 12)
+      * Math.abs(Number.isFinite(decor.scaleY) ? decor.scaleY : 1));
+    const footprint = rotatedBoxPolygon(
+      { x: decor.x, y: decor.y, width, height },
+      { x: decor.x + width / 2, y: decor.y + height / 2 },
+      decor.rotation || 0,
+    );
+    const venue = layoutState.currentVenue;
+    const canvas = effectiveCanvasGeometry(venue);
+    const venueBound = decor.parentType !== 'canvas';
+    const inBoundary = venueBound
+      ? footprintFitsVenue(footprint, venue, 0)
+      : footprint.every((point) => point.x >= 0 && point.y >= 0
+          && point.x <= canvas.canvasWidth && point.y <= canvas.canvasHeight);
+    if (!inBoundary) {
+      showCollisionWarning('The replacement décor footprint must stay inside its spatial boundary.');
+      return;
+    }
+    pushUndoSnapshot();
+    layoutState.updateDecor(id, { decorItemId: spec.id });
+    showToast(`Catalog reference repaired with ${spec.name}.`, 'success');
+  }, [
+    ensureCanEditLayout,
+    layoutState,
+    pushUndoSnapshot,
+    resolvePlacement,
+    showCollisionWarning,
+  ]);
 
   const handleVenueChange = useCallback((venueId: string) => {
     // Changing venues loads that venue's master layout, which replaces the current
@@ -844,7 +1648,6 @@ export default function AuthenticatedApp() {
       return;
     }
     layoutState.changeVenue(venueId);
-    layoutState.markLayoutClean();
     setTimeout(fitAndCenterVenue, 100);
   }, [layoutState, fitAndCenterVenue]);
 
@@ -853,7 +1656,6 @@ export default function AuthenticatedApp() {
     const venueId = pendingVenueChange;
     setPendingVenueChange(null);
     layoutState.changeVenue(venueId);
-    layoutState.markLayoutClean();
     setTimeout(fitAndCenterVenue, 100);
   }, [pendingVenueChange, layoutState, fitAndCenterVenue]);
 
@@ -864,9 +1666,11 @@ export default function AuthenticatedApp() {
       if (view !== 'studio') return;
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) return;
       const mod = e.ctrlKey || e.metaKey;
-      if ((e.key === 'Delete' || e.key === 'Backspace')) { if (layoutState.selectedId) { e.preventDefault(); layoutState.removeItem(layoutState.selectedId); } }
+      if ((e.key === 'Delete' || e.key === 'Backspace')) {
+        if (layoutState.selectedId) { e.preventDefault(); handleRemoveItem(layoutState.selectedId); }
+      }
       else if (mod && (e.key === 'd' || e.key === 'D')) {
-        if (layoutState.selectedId) { e.preventDefault(); pushUndoSnapshot(); layoutState.duplicateItem(layoutState.selectedId); }
+        if (layoutState.selectedId) { e.preventDefault(); handleDuplicateItem(layoutState.selectedId); }
       }
       else if (e.key === 'p' || e.key === 'P') { if (!mod) { setShowProperties(v => !v); } }
       else if (e.key === '?') { e.preventDefault(); setShowWorkspaceHelp(true); }
@@ -875,7 +1679,7 @@ export default function AuthenticatedApp() {
       else if (e.key === 'Escape') { layoutState.setSelectedId(null); setShowProperties(false); setDragItem(null); }
     };
     window.addEventListener('keydown', handleKeyDown); return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [view, layoutState, pushUndoSnapshot, handleResetToVenue, handleResetToCanvas]);
+  }, [view, layoutState, handleDuplicateItem, handleRemoveItem, handleResetToVenue, handleResetToCanvas]);
 
   useEffect(() => { rootStyles(brandingConfig); }, [brandingConfig]);
 
@@ -904,6 +1708,7 @@ export default function AuthenticatedApp() {
   // localStorage write (no-op when the platform backend is disabled).
   const handleSaveLayoutWithSync = useCallback(
     (name: string) => {
+      if (!ensureCanEditLayout()) return '';
       const id = layoutState.saveLayout(name);
       layoutState.markLayoutClean();
       // Refresh the Header's saved-layout list in the same tab (in local mode the
@@ -914,14 +1719,13 @@ export default function AuthenticatedApp() {
       showToast(`Layout "${name}" saved.`, 'success');
       return id;
     },
-    [layoutState, layoutBackendSync, refreshSavedLayouts],
+    [layoutState, layoutBackendSync, refreshSavedLayouts, ensureCanEditLayout],
   );
 
   // Load a saved layout, then treat the loaded content as the clean baseline.
   const handleLoadSavedLayout = useCallback(
     (id: string) => {
       layoutState.loadLayout(id);
-      layoutState.markLayoutClean();
       handleResetView();
       showToast('Saved layout loaded.', 'success');
     },
@@ -929,10 +1733,12 @@ export default function AuthenticatedApp() {
   );
 
   const handleSaveMasterLayout = useCallback(() => {
+    if (!ensureCanEditLayout()) return;
     const isLayoutEmpty =
       layoutState.layout.tables.length === 0 &&
       layoutState.layout.fixtures.length === 0 &&
-      (layoutState.layout.decor || []).length === 0;
+      (layoutState.layout.decor || []).length === 0 &&
+      (layoutState.layout.ceremonyRows || []).length === 0;
     if (isLayoutEmpty) {
       setConfirmEmptyMasterLayout(true);
       return;
@@ -940,10 +1746,11 @@ export default function AuthenticatedApp() {
     layoutState.saveMasterLayout();
     layoutState.markLayoutClean();
     showToast(`Saved as the master layout for ${layoutState.currentVenue.name}.`, 'success');
-  }, [layoutState]);
+  }, [layoutState, ensureCanEditLayout]);
 
   const handleSaveLayoutOverwriteWithSync = useCallback(
     (name: string) => {
+      if (!ensureCanEditLayout()) return '';
       const id = layoutState.saveLayoutWithOverwrite(name);
       layoutState.markLayoutClean();
       refreshSavedLayouts();
@@ -951,7 +1758,7 @@ export default function AuthenticatedApp() {
       showToast(`Layout "${name}" saved.`, 'success');
       return id;
     },
-    [layoutState, layoutBackendSync, refreshSavedLayouts],
+    [layoutState, layoutBackendSync, refreshSavedLayouts, ensureCanEditLayout],
   );
 
   const handleDeleteSavedLayoutWithSync = useCallback(
@@ -975,7 +1782,6 @@ export default function AuthenticatedApp() {
       const proceed = () => {
         if (t.venueId !== layoutState.currentVenue.id) layoutState.changeVenue(t.venueId);
         layoutState.loadTemplate(t);
-        layoutState.markLayoutClean();
         handleResetView();
         closeAll();
       };
@@ -1040,9 +1846,14 @@ export default function AuthenticatedApp() {
             <AdminPanel
               inline
               onClose={() => { window.location.hash = VENUE_HOME_HASH; setView('dashboard'); }}
-              currentLayout={{ tables: layoutState.layout.tables, fixtures: layoutState.layout.fixtures, venueId: layoutState.currentVenue.id, category: layoutState.currentVenue.category }}
-              onLoadTemplateForEdit={(t) => { if (t.venueId !== layoutState.currentVenue.id) layoutState.changeVenue(t.venueId); layoutState.loadTemplate(t); layoutState.markLayoutClean(); handleResetView(); }}
+              currentLayout={{ tables: layoutState.layout.tables, fixtures: layoutState.layout.fixtures, decor: layoutState.layout.decor || [], ceremonyRows: layoutState.layout.ceremonyRows || [], venueId: layoutState.currentVenue.id, category: layoutState.currentVenue.category }}
+              onLoadTemplateForEdit={(t) => { if (t.venueId !== layoutState.currentVenue.id) layoutState.changeVenue(t.venueId); layoutState.loadTemplate(t); handleResetView(); }}
               onOpenVenueMap={() => { window.location.hash = '#/venuemap'; setView('venuemap'); closeAll(); }}
+              onReplaceWorkingCatalogReferences={(kind, oldId, replacementId, options) => {
+                if (!ensureCanEditLayout()) return;
+                pushUndoSnapshot();
+                layoutState.replaceWorkingCatalogReferences(kind, oldId, replacementId, options);
+              }}
             />
           ) : (
             <div className="p-6 text-sm text-gray-500">You don't have admin access.</div>
@@ -1245,7 +2056,7 @@ export default function AuthenticatedApp() {
   }
 
   return (
-    <UndoRedoProvider onRestore={handleRestoreSnapshot}>
+    <UndoRedoProvider onRestore={handleRestoreSnapshot} getCurrentSnapshot={captureUndoSnapshot}>
       <div className="h-screen flex flex-col overflow-hidden spm-studio-root" style={{ fontFamily: brandingConfig.fontFamily, backgroundColor: brandingConfig.backgroundColor, color: brandingConfig.bodyTextColor }}>
         <Header
           currentVenue={layoutState.currentVenue} venues={selectableVenues} selectedVenueCategories={selectedVenueCategories} onChangeVenueCategories={setSelectedVenueCategories} onChangeVenue={handleVenueChange}
@@ -1270,64 +2081,55 @@ export default function AuthenticatedApp() {
         <div className="relative flex-1 flex overflow-hidden">
           {/* Sidebar overlays the canvas on small screens; returns to normal flex
               flow on md+ so the tools don't squeeze the canvas on mobile/tablet. */}
-          <div className={`${isMobile ? 'absolute top-0 bottom-0 left-0 z-30 flex' : ''} shrink-0 no-print spm-studio-chrome`}>
+          <div className={`${isMobile ? 'absolute top-0 bottom-0 left-0 z-30 flex' : ''} h-full min-h-0 shrink-0 no-print spm-studio-chrome`}>
             <Sidebar
               width={sidebarWidth} collapsed={sidebarCollapsed} onWidthChange={setSidebarWidth} onCollapsedChange={setSidebarCollapsed} zoom={zoom} onZoomChange={setZoom} showGrid={showGrid} onShowGridChange={setShowGrid} gridSize={gridSize} onGridSizeChange={setGridSize} gridContrast={gridContrast} onGridContrastChange={setGridContrast} snapToGrid={snapToGrid} onSnapToGridChange={setSnapToGrid}
-              onDragStart={handleDragStart} onDragEnd={handleDragEnd} currentDragItem={dragItem} onClearLayout={handleClearLayout} isAdmin={isAdmin} onViewImage={(url, title) => setImagePreview({ url, title })}
-              layoutCategories={layoutCategories} currentVenueCategory={layoutState.currentVenue.category} venueWidth={layoutState.currentVenue.width} venueHeight={layoutState.currentVenue.height} canvasWidth={layoutState.currentVenue.canvasWidth} canvasHeight={layoutState.currentVenue.canvasHeight}
+              onDragStart={handleDragStart} onDragEnd={handleDragEnd} onCancelPlacement={() => setDragItem(null)} currentDragItem={dragItem} keepAdding={keepAdding} onKeepAddingChange={setKeepAdding} onClearLayout={handleClearLayout} isAdmin={isAdmin} onViewImage={(url, title) => setImagePreview({ url, title })}
+              layoutCategories={layoutCategories} currentVenueCategory={layoutState.currentVenue.category} venueWidth={layoutState.currentVenue.width} venueHeight={layoutState.currentVenue.height} canvasWidth={effectiveCanvasGeometry(layoutState.currentVenue).canvasWidth} canvasHeight={effectiveCanvasGeometry(layoutState.currentVenue).canvasHeight}
+              onEditVenueGeometry={canOpenAdminPanel ? () => { if (ensureCanEditLayout()) setShowVenueGeometryEditor(true); } : undefined}
               onResetView={handleResetView} onResetToVenue={handleResetToVenue} onResetToCanvas={handleResetToCanvas} placedTables={layoutState.layout.tables} placedFixtures={layoutState.layout.fixtures} currentUser={user}
             />
           </div>
           <div ref={canvasContainerRef} className="flex-1 relative overflow-hidden spm-print-canvas-container">
             <FloorPlanCanvas
-              venue={layoutState.currentVenue} tables={layoutState.layout.tables} fixtures={layoutState.layout.fixtures} decor={layoutState.layout.decor} guests={layoutState.guests} selectedId={layoutState.selectedId} zoom={zoom} showGrid={showGrid} gridSize={gridSize} gridContrast={gridContrast}
-              onSelect={handleSelectItem} onDoubleClick={handleDoubleClickItem} onMove={handleMoveItem} onDrop={handleDrop} onClickToPlace={handleDrop} onDragStart={pushUndoSnapshot} isDragging={!!dragItem} isDraggingExterior={dragItem?.isExterior || false} isAdmin={isAdmin} onViewImage={(url, title) => setImagePreview({ url, title })} panOffset={panOffset} onPanChange={setPanOffset} onZoomChange={setZoom} svgRef={floorPlanSvgRef}
+              venue={layoutState.currentVenue} tables={layoutState.layout.tables} fixtures={layoutState.layout.fixtures} decor={layoutState.layout.decor} ceremonyRows={layoutState.layout.ceremonyRows || []} guests={layoutState.guests} selectedId={layoutState.selectedId} zoom={zoom} showGrid={showGrid} gridSize={gridSize} gridContrast={gridContrast}
+              onSelect={handleSelectItem} onDoubleClick={handleDoubleClickItem} onMove={handleMoveItem} onDrop={handleDrop} onClickToPlace={handleDrop} onDragStart={prepareMoveUndoSnapshot} isDragging={!!dragItem} isDraggingExterior={!!(dragItem?.isExterior || dragItem?.type === 'arrangement')} isAdmin={isAdmin} capacityMode="venue" onViewImage={(url, title) => setImagePreview({ url, title })} panOffset={panOffset} onPanChange={setPanOffset} onZoomChange={setZoom} svgRef={floorPlanSvgRef}
             />
+            {(layoutIdentityReview || (canOpenAdminPanel && !isSupportedVenueShape(layoutState.currentVenue.shape))) && (
+              <div className="absolute left-3 top-3 z-20 max-w-md space-y-2 no-print spm-studio-chrome">
+                {layoutIdentityReview && (
+                  <div className="rounded-xl border-2 border-red-500 bg-red-50 p-3 text-sm text-red-950 shadow-lg" role="alert">
+                    <strong>Layout identity repair required.</strong> Editing and saving are blocked because placed objects share IDs.
+                    {canOpenAdminPanel ? (
+                      <button type="button" onClick={() => setShowIdentityRepair(true)} className="ml-2 font-bold underline underline-offset-2">Review guided repair</button>
+                    ) : (
+                      <span className="ml-1">Ask a venue administrator to review the repair.</span>
+                    )}
+                  </div>
+                )}
+                {canOpenAdminPanel && !isSupportedVenueShape(layoutState.currentVenue.shape) && (
+                  <div className="rounded-xl border border-amber-400 bg-amber-50 p-3 text-sm text-amber-950 shadow-lg" role="alert">
+                    <strong>Venue shape needs repair.</strong> Stored “{layoutState.currentVenue.shape}” geometry is shown as a rectangular compatibility outline.
+                    <button type="button" onClick={() => { if (ensureCanEditLayout()) setShowVenueGeometryEditor(true); }} className="ml-2 font-bold underline underline-offset-2">Choose a supported shape</button>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="absolute bottom-4 left-4 flex items-center gap-2 flex-wrap no-print spm-studio-chrome">
               <div className="bg-white/90 backdrop-blur px-3 py-2 rounded-lg shadow-lg text-sm">
                 {(() => {
-                  const placed = getTotalCapacity();
-                  const seating = computeSpaceSeating(placed, layoutState.currentVenue.capacity, spaceCouples);
+                  const configuredSeats = getTotalCapacity();
                   return (
                     <>
-                      <span className="font-medium">Capacity:</span>{' '}
-                      <span className={seating.overVenueCapacity ? 'text-red-600 font-bold' : 'text-green-600'}>
-                        {placed} / {layoutState.currentVenue.capacity}
+                      <span className="font-medium">Configured seats:</span>{' '}
+                      <span className={configuredSeats > layoutState.currentVenue.capacity ? 'text-red-600 font-bold' : 'text-green-600'}>
+                        {configuredSeats}
                       </span>
-                      {seating.hasCouples && (
-                        <>
-                          <span className="ml-2 text-gray-500">
-                            · Needs seats for{' '}
-                            <span className={seating.underCapacity ? 'text-amber-700 font-semibold' : 'text-green-700'}>
-                              {seating.expectedGuests}
-                            </span>{' '}
-                            guests
-                          </span>
-                          {seating.underCapacity && (
-                            <span
-                              className="ml-1 text-amber-700 font-semibold"
-                              title="Couples using this space expect more guests than the placed seating seats."
-                            >
-                              ⚠️ under-capacity
-                            </span>
-                          )}
-                          <span className="block text-[11px] text-gray-400 mt-0.5">
-                            Booked couples: {spaceCouples.map((c) => c.coupleName).join(', ')}
-                          </span>
-                        </>
-                      )}
+                      <span className="ml-2 text-gray-600">· Venue maximum: {layoutState.currentVenue.capacity}</span>
                     </>
                   );
                 })()}
               </div>
-              <button
-                type="button"
-                onClick={() => open('overview')}
-                className="bg-white/90 backdrop-blur px-3 py-2 rounded-lg shadow-lg text-sm font-medium hover:bg-white"
-                aria-label="Open event overview dashboard"
-              >
-                📊 Overview
-              </button>
             </div>
             <UndoRedoToolbar />
             {layoutState.warnings.length > 0 &&
@@ -1366,10 +2168,10 @@ export default function AuthenticatedApp() {
               </div>
             )}
           </div>
-          <div className={`${isMobile ? 'absolute top-0 bottom-0 right-0 z-30 flex' : ''} shrink-0 no-print spm-studio-chrome`}>
+          <div className={`${isMobile ? 'absolute top-0 bottom-0 right-0 z-30 flex' : ''} h-full min-h-0 shrink-0 no-print spm-studio-chrome`}>
             <PropertiesPanel
-              selectedId={layoutState.selectedId} tables={layoutState.layout.tables} fixtures={layoutState.layout.fixtures} onUpdateTable={handleUpdateTableSafe} onUpdateFixture={handleUpdateFixtureSafe}
-              onRemoveItem={handleRemoveItem} onDuplicateItem={handleDuplicateItem} onClose={() => setShowProperties(false)}
+              selectedId={layoutState.selectedId} tables={layoutState.layout.tables} fixtures={layoutState.layout.fixtures} decor={layoutState.layout.decor || []} onUpdateTable={handleUpdateTableSafe} onUpdateFixture={handleUpdateFixtureSafe} onUpdateDecor={handleUpdateDecorSafe}
+              onRemoveItem={handleRemoveItem} onDuplicateItem={handleDuplicateItem} onRepairCatalogReference={handleRepairCatalogReference} onClose={() => setShowProperties(false)}
               onViewImage={(url, title) => setImagePreview({ url, title })} visible={showProperties} onToggleVisibility={() => setShowProperties(v => !v)} arrangements={layoutState.getDecorArrangements()}
             />
           </div>
@@ -1416,6 +2218,7 @@ export default function AuthenticatedApp() {
               venue={layoutState.currentVenue}
               tables={layoutState.layout.tables}
               fixtures={layoutState.layout.fixtures}
+              ceremonyRows={layoutState.layout.ceremonyRows || []}
               guests={layoutState.guests}
               layoutName={currentEventName}
               exportSvgRef={floorPlanSvgRef}
@@ -1467,25 +2270,7 @@ export default function AuthenticatedApp() {
             </CenteredModal>
           )}
           {showDecorDesigner && <DecorDesigner onClose={() => close('decorDesigner')} onSave={(a) => { const currentArrangements = layoutState.getDecorArrangements(); const nextArrangements = currentArrangements.find(x => x.id === a.id) ? currentArrangements.map(x => x.id === a.id ? a : x) : [...currentArrangements, a]; layoutState.setDecorArrangements(nextArrangements); close('decorDesigner'); }} initialArrangement={editingArrangementId ? layoutState.getDecorArrangements().find(a => a.id === editingArrangementId) : null} />}
-          {showAdmin && <AdminPanel onClose={() => { close('admin'); window.location.hash = VENUE_HOME_HASH; setView('dashboard'); layoutState.refreshVenues(); }} currentLayout={{ tables: layoutState.layout.tables, fixtures: layoutState.layout.fixtures, venueId: layoutState.currentVenue.id, category: layoutState.currentVenue.category }} onLoadTemplateForEdit={(t) => { if (t.venueId !== layoutState.currentVenue.id) layoutState.changeVenue(t.venueId); layoutState.loadTemplate(t); layoutState.markLayoutClean(); handleResetView(); }} onOpenVenueMap={() => { close('admin'); window.location.hash = '#/venuemap'; setView('venuemap'); closeAll(); }} />}
-          {showOverview && (
-            <EventOverview
-              guests={layoutState.guests}
-              tables={layoutState.layout.tables}
-              tableSpecs={getTableSpecs()}
-              venue={layoutState.currentVenue}
-              eventName={currentEventName}
-              venueName={layoutState.currentVenue.name}
-              onOpenVendors={() => {
-                close('overview');
-                window.location.hash = VENUE_HOME_HASH;
-                setView('dashboard');
-                emit('spm_dashboard_open_section', 'vendors');
-              }}
-              onOpenTemplates={() => { close('overview'); open('templates'); }}
-              onClose={() => close('overview')}
-            />
-          )}
+          {showAdmin && <AdminPanel onClose={() => { close('admin'); window.location.hash = VENUE_HOME_HASH; setView('dashboard'); layoutState.refreshVenues(); }} currentLayout={{ tables: layoutState.layout.tables, fixtures: layoutState.layout.fixtures, decor: layoutState.layout.decor || [], ceremonyRows: layoutState.layout.ceremonyRows || [], venueId: layoutState.currentVenue.id, category: layoutState.currentVenue.category }} onLoadTemplateForEdit={(t) => { if (t.venueId !== layoutState.currentVenue.id) layoutState.changeVenue(t.venueId); layoutState.loadTemplate(t); handleResetView(); }} onOpenVenueMap={() => { close('admin'); window.location.hash = '#/venuemap'; setView('venuemap'); closeAll(); }} onReplaceWorkingCatalogReferences={(kind, oldId, replacementId, options) => { if (!ensureCanEditLayout()) return; pushUndoSnapshot(); layoutState.replaceWorkingCatalogReferences(kind, oldId, replacementId, options); }} />}
           {showTemplates && (
             <TemplateSelector
               templates={getTemplates()}
@@ -1516,6 +2301,37 @@ export default function AuthenticatedApp() {
                 guardStudioLeave(() => { window.location.hash = '#/venuemap'; setView('venuemap'); closeAll(); });
               } : undefined}
               onClose={() => setShowLayoutsHome(false)}
+            />
+          )}
+          {showIdentityRepair && layoutIdentityReview && canOpenAdminPanel && (
+            <LayoutIdentityRepairDialog
+              key={layoutIdentityReview.signature}
+              review={layoutIdentityReview}
+              onApply={handleApplyIdentityRepair}
+              onClose={() => setShowIdentityRepair(false)}
+            />
+          )}
+          {showVenueGeometryEditor && canOpenAdminPanel && (
+            <VenueGeometryEditor
+              venue={layoutState.currentVenue}
+              sources={venueGeometrySources}
+              onApply={(nextVenue, baselineGeometrySignature) => {
+                const result = layoutState.updateCurrentVenue(nextVenue, baselineGeometrySignature);
+                if (result !== 'applied') {
+                  const reason = result === 'conflict'
+                    ? 'Venue geometry changed after this draft opened. Close and reopen the editor before applying.'
+                    : result === 'missing'
+                      ? 'This venue no longer exists. The geometry draft was not applied.'
+                      : 'The active venue changed before geometry could be applied.';
+                  throw new Error(reason);
+                }
+                // setVenues emits the canonical venue-domain change; the shared
+                // entity-sync listener performs exactly one backend push.
+                setShowVenueGeometryEditor(false);
+                setTimeout(handleResetToCanvas, 50);
+                showToast('Venue and canvas geometry applied. Placed-item coordinates were preserved.', 'success');
+              }}
+              onClose={() => setShowVenueGeometryEditor(false)}
             />
           )}
           {showWorkspaceHelp && <WorkspaceHelp onClose={() => setShowWorkspaceHelp(false)} />}
@@ -1580,6 +2396,7 @@ export default function AuthenticatedApp() {
             confirmLabel="Save empty master"
             onConfirm={() => {
               setConfirmEmptyMasterLayout(false);
+              if (!ensureCanEditLayout()) return;
               layoutState.saveMasterLayout();
               layoutState.markLayoutClean();
               showToast(`Saved as the master layout for ${layoutState.currentVenue.name}.`, 'success');

@@ -63,8 +63,7 @@ export function WorkspaceHelp({ onClose }: WorkspaceHelpProps) {
             </div>
           ))}
           <div className="pt-3 border-t border-gray-200 text-xs text-gray-500">
-            Tip: You can also drag tables &amp; fixtures from the left sidebar onto the
-            canvas, and open the <strong>📊 Overview</strong> dashboard for guest/capacity/budget insights.
+            Tip: You can drag or select tables and venue items from Layout Tools, then place them on the canvas. Venue layouts show configured seating and venue maximums; guest assignment stays in the Couple Portal.
           </div>
         </div>
       </div>
